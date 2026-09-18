@@ -443,6 +443,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "new_session", result);
 			}
 
+			case "load_session": {
+				const result = await runtimeHost.loadSession(command);
+				if (!result.cancelled) {
+					await rebindSession();
+				}
+				return success(id, "load_session", result);
+			}
+
 			// =================================================================
 			// State
 			// =================================================================

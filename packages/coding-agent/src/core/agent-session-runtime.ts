@@ -12,7 +12,13 @@ import type {
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
-import { SessionManager } from "./session-manager.ts";
+import {
+	CURRENT_SESSION_VERSION,
+	type FileEntry,
+	type SessionEntry,
+	type SessionHeader,
+	SessionManager,
+} from "./session-manager.ts";
 
 /**
  * Result returned by runtime creation.
@@ -220,6 +226,40 @@ export class AgentSessionRuntime {
 			}),
 		);
 		await this.finishSessionReplacement(options?.withSession);
+		return { cancelled: false };
+	}
+
+	async loadSession(options: {
+		cwd: string;
+		entries: SessionEntry[];
+		sessionId: string;
+	}): Promise<{ cancelled: boolean }> {
+		const beforeResult = await this.emitBeforeSwitch("resume");
+		if (beforeResult.cancelled) {
+			return beforeResult;
+		}
+
+		const header: SessionHeader = {
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id: options.sessionId,
+			timestamp: options.entries[0]?.timestamp ?? new Date().toISOString(),
+			cwd: options.cwd,
+		};
+		const fileEntries: FileEntry[] = [header, ...options.entries];
+		const previousSessionFile = this.session.sessionFile;
+		const sessionManager = SessionManager.inMemory(options.cwd, { id: options.sessionId }, fileEntries);
+
+		await this.teardownCurrent("resume");
+		this.apply(
+			await this.createRuntime({
+				cwd: options.cwd,
+				agentDir: this.services.agentDir,
+				sessionManager,
+				sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
+			}),
+		);
+		await this.finishSessionReplacement();
 		return { cancelled: false };
 	}
 

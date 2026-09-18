@@ -163,6 +163,21 @@ describe("AgentSessionRuntime characterization", () => {
 		expect(persistedAssistant.usage.cost.total).toBe(0.123);
 	});
 
+	it("loads externally persisted entries into an in-memory session", async () => {
+		const { runtime, tempDir } = await createRuntimeForTest(() => {});
+		await runtime.session.prompt("restore this conversation");
+		const entries = runtime.session.sessionManager.getEntries();
+
+		const result = await runtime.loadSession({ cwd: tempDir, sessionId: "desktop-session", entries });
+		await runtime.session.bindExtensions({});
+
+		expect(result).toEqual({ cancelled: false });
+		expect(runtime.session.sessionId).toBe("desktop-session");
+		expect(runtime.session.sessionFile).toBeUndefined();
+		expect(runtime.session.sessionManager.getEntries()).toEqual(entries);
+		expect(runtime.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+	});
+
 	it("settles the active response before session replacement", async () => {
 		let toolStarted!: () => void;
 		const toolStartedPromise = new Promise<void>((resolve) => {

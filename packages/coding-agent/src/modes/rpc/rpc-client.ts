@@ -238,6 +238,12 @@ export class RpcClient {
 		return this.getData(response);
 	}
 
+	/** Load a session supplied by an external persistence layer. */
+	async loadSession(cwd: string, sessionId: string, entries: SessionEntry[]): Promise<{ cancelled: boolean }> {
+		const response = await this.send({ type: "load_session", cwd, sessionId, entries });
+		return this.getData(response);
+	}
+
 	/**
 	 * Get current session state.
 	 */

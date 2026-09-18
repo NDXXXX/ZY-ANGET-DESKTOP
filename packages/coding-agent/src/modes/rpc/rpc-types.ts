@@ -25,6 +25,7 @@ export type RpcCommand =
 	| { id?: string; type: "abort" }
 	| { id?: string; type: "clear_queue" }
 	| { id?: string; type: "new_session"; parentSession?: string }
+	| { id?: string; type: "load_session"; cwd: string; sessionId: string; entries: SessionEntry[] }
 
 	// State
 	| { id?: string; type: "get_state" }
@@ -127,6 +128,7 @@ export type RpcResponse =
 			data: { steering: string[]; followUp: string[] };
 	  }
 	| { id?: string; type: "response"; command: "new_session"; success: true; data: { cancelled: boolean } }
+	| { id?: string; type: "response"; command: "load_session"; success: true; data: { cancelled: boolean } }
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
