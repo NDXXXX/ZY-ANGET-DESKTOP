@@ -17,6 +17,7 @@ import type {
 	SelectedProject,
 	ThemeMode,
 } from "../../shared/ipc.ts";
+import { McpPanel } from "./McpPanel.tsx";
 
 interface ChatMessage extends ConversationMessage {
 	streaming?: boolean;
@@ -27,6 +28,8 @@ interface ConversationMenuState {
 	x: number;
 	y: number;
 }
+
+type WorkspaceView = "chat" | "plugins";
 
 const DEFAULT_SIDEBAR_WIDTH = 260;
 const MIN_SIDEBAR_WIDTH = 240;
@@ -241,8 +244,10 @@ export function App() {
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 	const [streaming, setStreaming] = useState(false);
 	const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode);
+	const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("chat");
 	const activeConversationRef = useRef<string | undefined>(undefined);
 	const bootstrappedRef = useRef(false);
+	const composerInputRef = useRef<HTMLTextAreaElement>(null);
 	const messageEndRef = useRef<HTMLDivElement>(null);
 	const sidebarResizeRef = useRef<{ startWidth: number; startX: number } | null>(null);
 
@@ -292,6 +297,12 @@ export function App() {
 			messageEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
 		}
 	}, [messages.length]);
+
+	useEffect(() => {
+		if (workspaceView === "chat" && messages.length === 0 && agentState && !starting) {
+			composerInputRef.current?.focus();
+		}
+	}, [agentState, messages.length, starting, workspaceView]);
 
 	const refreshConversationList = useCallback((): void => {
 		void window.piDesktop
@@ -394,6 +405,7 @@ export function App() {
 	}, []);
 
 	async function openProject(): Promise<void> {
+		setWorkspaceView("chat");
 		setError(undefined);
 		const selection = await window.piDesktop.selectProject();
 		if (!selection) return;
@@ -416,6 +428,7 @@ export function App() {
 	}
 
 	async function openConversation(conversationId: string): Promise<void> {
+		setWorkspaceView("chat");
 		if (conversationId === activeConversationId || streaming || starting) return;
 		setError(undefined);
 		setStarting(true);
@@ -448,7 +461,7 @@ export function App() {
 	async function submit(event: FormEvent): Promise<void> {
 		event.preventDefault();
 		const message = input.trim();
-		if ((!message && attachments.length === 0) || !agentState || !activeConversationId || streaming) return;
+		if ((!message && attachments.length === 0) || !agentState || streaming || starting) return;
 		setError(undefined);
 		const attachmentSummary = attachments.map((attachment) => attachment.name).join("、");
 		const visibleMessage = [message, attachmentSummary && `附件：${attachmentSummary}`].filter(Boolean).join("\n\n");
@@ -456,35 +469,42 @@ export function App() {
 			...current,
 			{ content: visibleMessage, createdAt: Date.now(), id: crypto.randomUUID(), role: "user" },
 		]);
+		setInput("");
+		setAttachments([]);
+		const creatingConversation = activeConversationId === undefined;
+		if (creatingConversation) setStarting(true);
 		try {
-			await window.piDesktop.sendPrompt(activeConversationId, message, visibleMessage, attachments);
-			setInput("");
-			setAttachments([]);
+			let conversationId = activeConversationId;
+			if (!conversationId) {
+				const conversation = await window.piDesktop.createConversation({
+					model: agentState.model?.id ?? "deepseek-v4-pro",
+					provider: agentState.model?.provider ?? "deepseek",
+				});
+				conversationId = conversation.id;
+				activeConversationRef.current = conversation.id;
+				setActiveConversationId(conversation.id);
+				refreshConversationList();
+			}
+			await window.piDesktop.sendPrompt(conversationId, message, visibleMessage, attachments);
 		} catch (promptError) {
 			setError(promptError instanceof Error ? promptError.message : String(promptError));
 			setStreaming(false);
+		} finally {
+			if (creatingConversation) setStarting(false);
 		}
 	}
 
-	async function newSession(): Promise<void> {
+	function newSession(): void {
+		setWorkspaceView("chat");
 		if (!agentState || streaming) return;
 		setError(undefined);
-		setStarting(true);
-		try {
-			const conversation = await window.piDesktop.createConversation({
-				model: agentState.model?.id ?? "deepseek-v4-pro",
-				provider: agentState.model?.provider ?? "deepseek",
-			});
-			setActiveConversationId(conversation.id);
-			setProject(undefined);
-			setMessages(conversation.messages);
-			setAttachments([]);
-			refreshConversationList();
-		} catch (sessionError) {
-			setError(sessionError instanceof Error ? sessionError.message : String(sessionError));
-		} finally {
-			setStarting(false);
-		}
+		activeConversationRef.current = undefined;
+		setActiveConversationId(undefined);
+		setProject(undefined);
+		setMessages([]);
+		setAttachments([]);
+		setInput("");
+		window.requestAnimationFrame(() => composerInputRef.current?.focus());
 	}
 
 	async function renameConversation(conversation: ConversationSummary): Promise<void> {
@@ -680,7 +700,8 @@ export function App() {
 			<aside className={`sidebar${sidebarCollapsed ? " is-collapsed" : ""}`}>
 				<nav className="sidebar-nav" aria-label="主导航">
 					<button
-						className="nav-item active"
+						aria-current={workspaceView === "chat" ? "page" : undefined}
+						className={`nav-item${workspaceView === "chat" ? " active" : ""}`}
 						disabled={!agentState || streaming || starting}
 						type="button"
 						onClick={newSession}
@@ -696,7 +717,12 @@ export function App() {
 						<Icon name="schedule" />
 						<span>定时任务</span>
 					</button>
-					<button className="nav-item" type="button">
+					<button
+						aria-current={workspaceView === "plugins" ? "page" : undefined}
+						className={`nav-item${workspaceView === "plugins" ? " active" : ""}`}
+						type="button"
+						onClick={() => setWorkspaceView("plugins")}
+					>
 						<Icon name="plugin" />
 						<span>插件</span>
 					</button>
@@ -802,98 +828,117 @@ export function App() {
 				</div>
 			)}
 
-			<main className="workspace">
-				<div className="content-grid">
-					<section aria-live="polite" className="conversation">
-						{messages.length > 0 && (
-							<div className="message-list">
-								{messages.map((message) => (
-									<article className={`message ${message.role}`} key={message.id}>
-										<div className="message-content">{message.content}</div>
-										{message.streaming && <span className="streaming-cursor" />}
-									</article>
+			{workspaceView === "plugins" ? (
+				<McpPanel />
+			) : (
+				<main className="workspace">
+					<div className="content-grid">
+						<section aria-live="polite" className="conversation">
+							{messages.length === 0 ? (
+								<output className="conversation-empty">
+									<span aria-hidden="true" className="conversation-empty-mark">
+										D
+									</span>
+									<h1>{!agentState ? "正在连接 Agent…" : starting ? "正在准备对话…" : "有什么可以帮你？"}</h1>
+									<p>
+										{!agentState || starting
+											? "连接完成后即可开始"
+											: project
+												? `已就绪，可以在 ${project.name} 中开始工作`
+												: "Agent 已就绪，输入消息开始新对话"}
+									</p>
+								</output>
+							) : (
+								<div className="message-list">
+									{messages.map((message) => (
+										<article className={`message ${message.role}`} key={message.id}>
+											<div className="message-content">{message.content}</div>
+											{message.streaming && <span className="streaming-cursor" />}
+										</article>
+									))}
+								</div>
+							)}
+							<div ref={messageEndRef} />
+						</section>
+					</div>
+
+					{error && (
+						<div className="error-banner" role="alert">
+							{error}
+						</div>
+					)}
+
+					<form className="composer" onSubmit={submit}>
+						{attachments.length > 0 && (
+							<div className="attachment-list">
+								{attachments.map((attachment) => (
+									<span className="attachment-chip" key={attachment.path}>
+										<span>{attachment.name}</span>
+										<button
+											aria-label={`移除 ${attachment.name}`}
+											type="button"
+											onClick={() =>
+												setAttachments((current) => current.filter((item) => item.path !== attachment.path))
+											}
+										>
+											<Icon name="close" />
+										</button>
+									</span>
 								))}
 							</div>
 						)}
-						<div ref={messageEndRef} />
-					</section>
-				</div>
-
-				{error && (
-					<div className="error-banner" role="alert">
-						{error}
-					</div>
-				)}
-
-				<form className="composer" onSubmit={submit}>
-					{attachments.length > 0 && (
-						<div className="attachment-list">
-							{attachments.map((attachment) => (
-								<span className="attachment-chip" key={attachment.path}>
-									<span>{attachment.name}</span>
-									<button
-										aria-label={`移除 ${attachment.name}`}
-										type="button"
-										onClick={() =>
-											setAttachments((current) => current.filter((item) => item.path !== attachment.path))
-										}
-									>
-										<Icon name="close" />
-									</button>
-								</span>
-							))}
-						</div>
-					)}
-					<div className="composer-row">
-						<button
-							aria-label="添加文件"
-							className="attachment-button"
-							disabled={!agentState || starting || streaming}
-							title="添加文件"
-							type="button"
-							onClick={addAttachments}
-						>
-							<Icon name="add" />
-						</button>
-						<textarea
-							disabled={!agentState || starting}
-							placeholder="给DDClaw 发消息"
-							rows={1}
-							value={input}
-							onChange={(event) => setInput(event.target.value)}
-							onKeyDown={(event) => {
-								if (event.key === "Enter" && !event.shiftKey) {
-									event.preventDefault();
-									event.currentTarget.form?.requestSubmit();
-								}
-							}}
-						/>
-						<div aria-hidden="true" className="composer-controls">
-							<span className="composer-language">
-								<span>中</span>
-								<Icon name="chevron-down" />
-							</span>
-							<span className="composer-voice">
-								<Icon name="microphone" />
-							</span>
-						</div>
-						{streaming ? (
-							<button aria-label="停止任务" className="send-button stop" type="button" onClick={abort}>
-								<Icon name="stop" />
-							</button>
-						) : (
+						<div className="composer-row">
 							<button
-								aria-label="发送消息"
-								className="send-button"
-								disabled={!agentState || (!input.trim() && attachments.length === 0)}
-								type="submit"
+								aria-label="添加文件"
+								className="attachment-button"
+								disabled={!agentState || starting || streaming}
+								title="添加文件"
+								type="button"
+								onClick={addAttachments}
 							>
-								<Icon name="send" />
+								<Icon name="add" />
 							</button>
-						)}
-					</div>
-				</form>
-			</main>
+							<textarea
+								ref={composerInputRef}
+								disabled={!agentState || starting}
+								placeholder="给DDClaw 发消息"
+								rows={1}
+								value={input}
+								onChange={(event) => setInput(event.target.value)}
+								onKeyDown={(event) => {
+									if (event.key === "Enter" && !event.shiftKey) {
+										event.preventDefault();
+										event.currentTarget.form?.requestSubmit();
+									}
+								}}
+							/>
+							<div aria-hidden="true" className="composer-controls">
+								<span className="composer-language">
+									<span>中</span>
+									<Icon name="chevron-down" />
+								</span>
+								<span className="composer-voice">
+									<Icon name="microphone" />
+								</span>
+							</div>
+							{streaming ? (
+								<button aria-label="停止任务" className="send-button stop" type="button" onClick={abort}>
+									<Icon name="stop" />
+								</button>
+							) : (
+								<button
+									aria-label="发送消息"
+									className="send-button"
+									disabled={!agentState || (!input.trim() && attachments.length === 0)}
+									type="submit"
+								>
+									<Icon name="send" />
+								</button>
+							)}
+						</div>
+					</form>
+				</main>
+			)}
 		</div>
 	);
 }

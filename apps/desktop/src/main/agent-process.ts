@@ -5,6 +5,7 @@ export interface AgentProcessOptions {
 	approved: boolean;
 	cliPath: string;
 	cwd: string;
+	extensions?: string[];
 	model: string;
 	provider: string;
 	toolsEnabled: boolean;
@@ -41,6 +42,10 @@ export class AgentProcess {
 		this.eventListener = listener;
 	}
 
+	isRunning(): boolean {
+		return this.child !== undefined;
+	}
+
 	async start(options: AgentProcessOptions): Promise<unknown> {
 		await this.stop();
 		this.stderr = "";
@@ -58,6 +63,9 @@ export class AgentProcess {
 			options.model,
 			options.approved ? "--approve" : "--no-approve",
 		];
+		if (options.extensions) {
+			for (const extension of options.extensions) args.push("-e", extension);
+		}
 		if (!options.toolsEnabled) args.push("--no-tools");
 
 		const child = spawn(process.execPath, args, {

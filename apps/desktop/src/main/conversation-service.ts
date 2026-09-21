@@ -11,9 +11,11 @@ import { type AgentImage, AgentProcess, type AgentProcessEvent } from "./agent-p
 import { ConversationStore, type SessionEntryRecord } from "./conversation-store.ts";
 
 interface ConversationServiceOptions {
+	agent?: AgentProcess;
 	agentCliPath: () => string;
 	emit: (event: DesktopAgentEvent) => void;
 	freeChatCwd: string;
+	mcpExtensionPath: () => string | undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -48,17 +50,19 @@ function normalizeEntries(entries: Array<Record<string, unknown>>): SessionEntry
 }
 
 export class ConversationService {
-	private readonly agent = new AgentProcess();
+	private readonly agent: AgentProcess;
 	private readonly options: ConversationServiceOptions;
 	private readonly store = new ConversationStore();
 	private readonly trustedProjectPaths = new Set<string>();
 	private activeConversationId: string | undefined;
 	private activeRunId: string | undefined;
 	private abortRequested = false;
+	private agentRuntimeKey: string | undefined;
 	private initialized = false;
 
 	constructor(options: ConversationServiceOptions) {
 		this.options = options;
+		this.agent = options.agent ?? new AgentProcess();
 		this.agent.onEvent((event) => this.handleAgentEvent(event));
 	}
 
@@ -158,6 +162,7 @@ export class ConversationService {
 	async stop(): Promise<void> {
 		if (this.activeRunId) this.store.interruptRun(this.activeRunId, "Desktop closed while the agent was running");
 		this.activeRunId = undefined;
+		this.agentRuntimeKey = undefined;
 		await this.agent.stop();
 	}
 
@@ -170,14 +175,21 @@ export class ConversationService {
 		const cwd = projectPath && existsSync(projectPath) ? projectPath : this.options.freeChatCwd;
 		const projectTrusted =
 			projectPath !== undefined && cwd === projectPath && this.trustedProjectPaths.has(projectPath);
-		await this.agent.start({
+		const mcpExtension = this.options.mcpExtensionPath();
+		const runtimeOptions = {
 			approved: projectTrusted,
 			cliPath: this.options.agentCliPath(),
 			cwd,
+			extensions: mcpExtension ? [mcpExtension] : undefined,
 			model: conversation.model,
 			provider: conversation.provider,
 			toolsEnabled: projectTrusted,
-		});
+		};
+		const runtimeKey = JSON.stringify(runtimeOptions);
+		if (!this.agent.isRunning() || runtimeKey !== this.agentRuntimeKey) {
+			await this.agent.start(runtimeOptions);
+			this.agentRuntimeKey = runtimeKey;
+		}
 		const state = await this.agent.loadSession(cwd, conversation.id, this.store.getSessionEntries(conversation.id));
 		this.activeConversationId = conversation.id;
 		this.store.setLastConversationId(conversation.id);

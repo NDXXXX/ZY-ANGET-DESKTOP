@@ -63,6 +63,58 @@ export interface CreateConversationOptions {
 	provider: string;
 }
 
+export interface McpStdioServer {
+	type: "stdio";
+	command: string;
+	args?: string[];
+	env?: Record<string, string>;
+}
+
+export interface McpHttpServer {
+	type: "http";
+	url: string;
+	headers?: Record<string, string>;
+}
+
+export type McpServerConfig = McpStdioServer | McpHttpServer;
+export type McpServers = Record<string, McpServerConfig>;
+
+/**
+ * Result of a read-only health check against one MCP server. A probe only runs
+ * `initialize` and `tools/list`; it never calls tools.
+ */
+export interface McpProbeResult {
+	status: "ready" | "error";
+	toolCount?: number;
+	/** One-line, user-facing reason for a failure. */
+	message?: string;
+	/** Raw stderr or protocol detail, shown in the diagnostics section. */
+	detail?: string;
+	/** Actionable next step. */
+	hint?: string;
+}
+
+/** Set when mcp-servers.json exists but cannot be parsed. */
+export interface McpConfigProblem {
+	backupAvailable: boolean;
+	message: string;
+	path: string;
+}
+
+export interface McpListResult {
+	problem?: McpConfigProblem;
+	servers: McpServers;
+}
+
+export type InstalledSkillScope = "personal" | "project";
+
+export interface InstalledSkill {
+	description: string;
+	name: string;
+	path: string;
+	scope: InstalledSkillScope;
+}
+
 export interface DesktopAgentEvent {
 	conversationId?: string;
 	runId?: string;
@@ -78,11 +130,19 @@ export interface PiDesktopBridge {
 	createConversation(options: CreateConversationOptions): Promise<ConversationDetail>;
 	deleteConversation(conversationId: string): Promise<ConversationSummary[]>;
 	listConversations(): Promise<ConversationSummary[]>;
+	listMcpServers(): Promise<McpListResult>;
+	listSkills(): Promise<InstalledSkill[]>;
 	minimizeWindow(): Promise<void>;
 	onAgentEvent(listener: (event: DesktopAgentEvent) => void): () => void;
 	openConversation(conversationId: string): Promise<ConversationDetail>;
+	probeMcpServers(names: string[]): Promise<Record<string, McpProbeResult>>;
 	renameConversation(conversationId: string, title: string): Promise<ConversationSummary[]>;
+	restoreMcpBackup(): Promise<McpListResult>;
+	revealMcpConfig(): Promise<void>;
+	revealSkillsDirectory(): Promise<void>;
+	saveMcpServers(servers: McpServers): Promise<void>;
 	selectAttachments(): Promise<SelectedAttachment[]>;
+	selectDirectory(): Promise<string | null>;
 	selectProject(): Promise<SelectedProject | null>;
 	sendPrompt(
 		conversationId: string,
@@ -109,6 +169,14 @@ export const IPC_CHANNELS = {
 	conversationOpen: "conversation:open",
 	conversationPin: "conversation:pin",
 	conversationRename: "conversation:rename",
+	mcpList: "mcp:list",
+	mcpProbe: "mcp:probe",
+	mcpRestore: "mcp:restore",
+	mcpReveal: "mcp:reveal",
+	mcpSave: "mcp:save",
+	mcpSelectDirectory: "mcp:select-directory",
+	skillList: "skill:list",
+	skillReveal: "skill:reveal",
 	projectSelect: "project:select",
 	windowClose: "window:close",
 	windowMinimize: "window:minimize",

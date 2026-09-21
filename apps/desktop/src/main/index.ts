@@ -1,15 +1,24 @@
 import { existsSync, statSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { basename, extname, join, resolve } from "node:path";
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { basename, dirname, extname, join, resolve } from "node:path";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import {
 	type CreateConversationOptions,
 	IPC_CHANNELS,
+	type McpServers,
 	type SelectedAttachment,
 	type SelectedProject,
 } from "../shared/ipc.ts";
 import type { AgentImage } from "./agent-process.ts";
 import { ConversationService } from "./conversation-service.ts";
+import { readMcpServers, resolveConfigPath, restoreMcpBackup, writeMcpServers } from "./mcp-config.ts";
+import { probeMcpServers } from "./mcp-probe.ts";
+import { ensurePersonalSkillsDirectory, listInstalledSkills } from "./skill-config.ts";
+
+// Electron's macOS GPU compositor can leave the frameless window black or
+// display stale surfaces from other apps. Software compositing is more stable
+// for this mostly static desktop UI and must be enabled before `ready`.
+if (process.platform === "darwin") app.disableHardwareAcceleration();
 
 const appIconPath = join(app.getAppPath(), "resources/app-icon.png");
 const selectedAttachmentPaths = new Set<string>();
@@ -42,6 +51,18 @@ function findAgentCli(): string {
 	const cliPath = candidates.find((candidate) => existsSync(candidate));
 	if (!cliPath) throw new Error("找不到 Pi Agent 构建产物。请先在仓库根目录运行 npm run build。");
 	return cliPath;
+}
+
+function findMcpExtension(): string | undefined {
+	const appPath = app.getAppPath();
+	const candidates = [
+		process.env.PI_DESKTOP_MCP_EXTENSION,
+		resolve(appPath, "../../packages/coding-agent/examples/extensions/mcp/index.ts"),
+		resolve(process.cwd(), "packages/coding-agent/examples/extensions/mcp/index.ts"),
+		resolve(process.cwd(), "../../packages/coding-agent/examples/extensions/mcp/index.ts"),
+	].filter((candidate): candidate is string => Boolean(candidate));
+
+	return candidates.find((candidate) => existsSync(candidate));
 }
 
 function getConversationService(): ConversationService {
@@ -166,6 +187,35 @@ function registerIpcHandlers(): void {
 	ipcMain.handle(IPC_CHANNELS.conversationRename, (_event, conversationId: string, title: string) =>
 		getConversationService().renameConversation(conversationId, title),
 	);
+	ipcMain.handle(IPC_CHANNELS.mcpList, () => readMcpServers());
+	ipcMain.handle(IPC_CHANNELS.mcpSave, (_event, servers: McpServers) => {
+		writeMcpServers(servers);
+	});
+	ipcMain.handle(IPC_CHANNELS.mcpProbe, (_event, names: string[]) => {
+		const { servers } = readMcpServers();
+		const requested = Array.isArray(names) ? names.filter((name): name is string => typeof name === "string") : [];
+		return probeMcpServers(servers, requested);
+	});
+	ipcMain.handle(IPC_CHANNELS.mcpRestore, () => restoreMcpBackup());
+	ipcMain.handle(IPC_CHANNELS.mcpReveal, async () => {
+		const configPath = resolveConfigPath();
+		if (existsSync(configPath)) shell.showItemInFolder(configPath);
+		else await shell.openPath(dirname(configPath));
+	});
+	ipcMain.handle(IPC_CHANNELS.mcpSelectDirectory, async () => {
+		const window = mainWindow;
+		if (!window) throw new Error("桌面窗口尚未就绪");
+		const selection = await dialog.showOpenDialog(window, {
+			buttonLabel: "授权",
+			properties: ["openDirectory"],
+			title: "选择要授权给 Agent 的目录",
+		});
+		return selection.canceled ? null : (selection.filePaths[0] ?? null);
+	});
+	ipcMain.handle(IPC_CHANNELS.skillList, () => listInstalledSkills(selectedProjectPath));
+	ipcMain.handle(IPC_CHANNELS.skillReveal, async () => {
+		await shell.openPath(ensurePersonalSkillsDirectory());
+	});
 	ipcMain.handle(IPC_CHANNELS.conversationPin, (_event, conversationId: string, pinned: boolean) =>
 		getConversationService().setConversationPinned(conversationId, pinned),
 	);
@@ -238,6 +288,7 @@ app.whenReady().then(() => {
 		agentCliPath: findAgentCli,
 		emit: (event) => mainWindow?.webContents.send(IPC_CHANNELS.agentEvent, event),
 		freeChatCwd: app.getPath("userData"),
+		mcpExtensionPath: findMcpExtension,
 	});
 	registerIpcHandlers();
 	createWindow();
