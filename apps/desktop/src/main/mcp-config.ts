@@ -1,7 +1,16 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { McpConfigProblem, McpListResult, McpServers } from "../shared/ipc.ts";
+import type { McpConfigProblem, McpListResult, McpMutationResult, McpServers } from "../shared/ipc.ts";
 import { isRecord, normalizeServer, parseMcpServers } from "../shared/mcp.ts";
 
 // Mirrors the coding-agent extension's config location (`getAgentDir()` +
@@ -100,16 +109,21 @@ function assertWritable(servers: McpServers): void {
 
 function writeConfig(servers: McpServers): void {
 	const configPath = resolveConfigPath();
-	mkdirSync(dirname(configPath), { recursive: true });
+	mkdirSync(dirname(configPath), { mode: 0o700, recursive: true });
 
 	// `mcpServers` is the key every other MCP client uses, so the file can be
 	// copied into (or out of) Claude Desktop, Cursor and VS Code unchanged.
 	const contents = `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`;
-	const tempPath = `${configPath}.tmp`;
-	writeFileSync(tempPath, contents);
-	// Rename is atomic on the same filesystem, so a crash mid-write cannot leave
-	// a half-written config behind.
-	renameSync(tempPath, configPath);
+	const tempPath = `${configPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+	try {
+		writeFileSync(tempPath, contents, { mode: 0o600 });
+		// Rename is atomic on the same filesystem, so a crash mid-write cannot leave
+		// a half-written config behind.
+		renameSync(tempPath, configPath);
+		chmodSync(configPath, 0o600);
+	} finally {
+		if (existsSync(tempPath)) unlinkSync(tempPath);
+	}
 }
 
 export function writeMcpServers(servers: McpServers): void {
@@ -119,8 +133,44 @@ export function writeMcpServers(servers: McpServers): void {
 	// Keep the last known-good config so a bad edit can be rolled back.
 	if (existsSync(configPath) && readServersFrom(configPath)) {
 		copyFileSync(configPath, resolveBackupPath());
+		chmodSync(resolveBackupPath(), 0o600);
 	}
 	writeConfig(servers);
+}
+
+function uniqueName(base: string, taken: McpServers): string {
+	if (!taken[base]) return base;
+	for (let index = 2; ; index += 1) {
+		const candidate = `${base}-${index}`;
+		if (!taken[candidate]) return candidate;
+	}
+}
+
+export function addMcpServers(additions: McpServers): McpMutationResult {
+	for (const [name, definition] of Object.entries(additions)) {
+		if (!name.trim() || !normalizeServer(definition)) throw new Error(`MCP 服务器 "${name}" 配置无效`);
+	}
+	const current = readMcpServers();
+	if (current.problem) throw new Error(`${current.problem.message}，请先修复或恢复备份再保存`);
+	const next = { ...current.servers };
+	const names: string[] = [];
+	for (const [name, definition] of Object.entries(additions)) {
+		const finalName = uniqueName(name, next);
+		next[finalName] = definition;
+		names.push(finalName);
+	}
+	writeMcpServers(next);
+	return { ...readMcpServers(), names };
+}
+
+export function removeMcpServer(name: string): McpListResult {
+	const current = readMcpServers();
+	if (current.problem) throw new Error(`${current.problem.message}，请先修复或恢复备份再保存`);
+	if (!current.servers[name]) throw new Error(`配置里找不到 MCP 服务器 "${name}"`);
+	const next = { ...current.servers };
+	delete next[name];
+	writeMcpServers(next);
+	return readMcpServers();
 }
 
 /** Restores `mcp-servers.json` from its `.bak`, used when the config is corrupt. */

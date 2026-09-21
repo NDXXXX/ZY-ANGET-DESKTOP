@@ -1,9 +1,15 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { McpServers } from "../src/shared/ipc.ts";
-import { readMcpServers, restoreMcpBackup, writeMcpServers } from "../src/main/mcp-config.ts";
+import {
+	addMcpServers,
+	readMcpServers,
+	removeMcpServer,
+	restoreMcpBackup,
+	writeMcpServers,
+} from "../src/main/mcp-config.ts";
 
 const filesystemServer: McpServers = {
 	filesystem: { type: "stdio", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/data"] },
@@ -47,6 +53,24 @@ describe("mcp-config", () => {
 		writeMcpServers(filesystemServer);
 
 		expect(readdirSync(directory)).toEqual(["mcp-servers.json"]);
+		expect(statSync(configPath).mode & 0o777).toBe(0o600);
+	});
+
+	it("adds servers to the latest config and resolves name conflicts", () => {
+		writeMcpServers(filesystemServer);
+
+		const result = addMcpServers({ filesystem: docsServer.context7 });
+
+		expect(result.names).toEqual(["filesystem-2"]);
+		expect(result.servers).toEqual({ ...filesystemServer, "filesystem-2": docsServer.context7 });
+	});
+
+	it("removes only the requested server from the latest config", () => {
+		writeMcpServers({ ...filesystemServer, ...docsServer });
+
+		const result = removeMcpServer("filesystem");
+
+		expect(result).toEqual({ servers: docsServer });
 	});
 
 	it("treats an explicitly empty server map as configured", () => {

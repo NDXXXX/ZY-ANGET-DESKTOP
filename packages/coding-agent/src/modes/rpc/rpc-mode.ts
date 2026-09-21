@@ -45,6 +45,7 @@ export type {
 	RpcExtensionUIResponse,
 	RpcResponse,
 	RpcSessionState,
+	RpcSkillsResult,
 } from "./rpc-types.ts";
 
 /**
@@ -471,6 +472,26 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					pendingMessageCount: session.pendingMessageCount,
 				};
 				return success(id, "get_state", state);
+			}
+
+			case "get_skills": {
+				const result = session.resourceLoader.getSkills();
+				return success(id, "get_skills", {
+					diagnostics: result.diagnostics.map(({ type, message, path }) => ({ type, message, path })),
+					skills: result.skills.map((skill) => ({
+						description: skill.description,
+						disableModelInvocation: skill.disableModelInvocation,
+						filePath: skill.filePath,
+						name: skill.name,
+						scope: skill.sourceInfo.scope,
+						source: skill.sourceInfo.source,
+					})),
+				});
+			}
+
+			case "reload_resources": {
+				await session.reload();
+				return success(id, "reload_resources");
 			}
 
 			// =================================================================

@@ -39,7 +39,7 @@ function createFakePi(): FakePi {
 		registerTool(tool: { name: string }) {
 			tools.push(tool.name);
 		},
-		async runHooks(name) {
+		async runHooks(name: HookName) {
 			for (const hook of hooks.get(name) ?? []) await hook({ type: name }, context);
 		},
 	} as unknown as FakePi;
@@ -187,5 +187,46 @@ describe("MCP extension connection reuse", () => {
 		await pi.runHooks("session_start");
 
 		expect(await waitFor(() => !isAlive(pid))).toBe(true);
+	});
+
+	it("connects at most three servers concurrently and registers tools in config order", async () => {
+		const eventFile = join(directory, "events.log");
+		const names = ["alpha", "beta", "gamma", "delta"];
+		const mcpServers = Object.fromEntries(
+			names.map((name) => [
+				name,
+				{
+					command: process.execPath,
+					args: [fixture],
+					env: {
+						MCP_ECHO_DELAY_MS: "200",
+						MCP_ECHO_EVENT_FILE: eventFile,
+						MCP_ECHO_LABEL: name,
+						MCP_ECHO_PID_FILE: join(directory, `${name}.pid`),
+					},
+				},
+			]),
+		);
+		process.env.PI_MCP_SERVERS = JSON.stringify({ mcpServers });
+		const pi = createFakePi();
+		(await loadExtension())(pi);
+
+		await pi.runHooks("session_start");
+		for (const name of names) {
+			const pid = readPid(join(directory, `${name}.pid`));
+			expect(pid).toBeDefined();
+			pids.add(pid as number);
+		}
+
+		const events = readFileSync(eventFile, "utf8").trim().split("\n");
+		const firstFinish = events.findIndex((event) => event.endsWith(":finish"));
+		expect(events.slice(0, firstFinish).filter((event) => event.endsWith(":start"))).toHaveLength(3);
+		expect(events.indexOf("delta:start")).toBeGreaterThan(firstFinish);
+		expect(pi.tools.filter((name) => name.endsWith("_echo"))).toEqual([
+			"mcp_alpha_echo",
+			"mcp_beta_echo",
+			"mcp_gamma_echo",
+			"mcp_delta_echo",
+		]);
 	});
 });

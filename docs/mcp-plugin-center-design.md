@@ -1,7 +1,7 @@
 # 插件与技能中心设计文档
 
-状态：Draft  
-更新时间：2026-09-19  
+状态：Draft
+更新时间：2026-09-19
 适用范围：`apps/desktop` 与 `packages/coding-agent/examples/extensions/mcp`
 
 ## 1. 背景

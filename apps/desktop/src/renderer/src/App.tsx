@@ -680,18 +680,20 @@ export function App() {
 						<Icon name="sidebar" />
 					</button>
 					<button
-						aria-label="后退"
+						aria-label="后退，暂未开放"
 						className="window-icon-button"
+						disabled
+						title="暂未开放"
 						type="button"
-						onClick={() => window.history.back()}
 					>
 						<Icon name="back" />
 					</button>
 					<button
-						aria-label="前进"
+						aria-label="前进，暂未开放"
 						className="window-icon-button"
+						disabled
+						title="暂未开放"
 						type="button"
-						onClick={() => window.history.forward()}
 					>
 						<Icon name="forward" />
 					</button>
@@ -709,11 +711,11 @@ export function App() {
 						<Icon name="add" />
 						<span>新聊天</span>
 					</button>
-					<button className="nav-item" type="button">
+					<button className="nav-item" disabled title="暂未开放" type="button">
 						<Icon name="image" />
 						<span>图像</span>
 					</button>
-					<button className="nav-item" type="button">
+					<button className="nav-item" disabled title="暂未开放" type="button">
 						<Icon name="schedule" />
 						<span>定时任务</span>
 					</button>
@@ -726,7 +728,7 @@ export function App() {
 						<Icon name="plugin" />
 						<span>插件</span>
 					</button>
-					<button className="nav-item" type="button">
+					<button className="nav-item" disabled title="暂未开放" type="button">
 						<Icon name="explore" />
 						<span>探索</span>
 					</button>

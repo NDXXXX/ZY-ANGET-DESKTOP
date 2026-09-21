@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import {
 	type CreateConversationOptions,
@@ -9,11 +9,13 @@ import {
 	type SelectedAttachment,
 	type SelectedProject,
 } from "../shared/ipc.ts";
+import { catalogById } from "../shared/plugin-catalog.ts";
 import type { AgentImage } from "./agent-process.ts";
 import { ConversationService } from "./conversation-service.ts";
-import { readMcpServers, resolveConfigPath, restoreMcpBackup, writeMcpServers } from "./mcp-config.ts";
-import { probeMcpServers } from "./mcp-probe.ts";
-import { ensurePersonalSkillsDirectory, listInstalledSkills } from "./skill-config.ts";
+import { addMcpServers, readMcpServers, removeMcpServer, resolveConfigPath, restoreMcpBackup } from "./mcp-config.ts";
+import { probeMcpServer } from "./mcp-probe.ts";
+import { resolveRuntimeAssets } from "./runtime-assets.ts";
+import { ensurePersonalSkillsDirectory } from "./skill-config.ts";
 
 // Electron's macOS GPU compositor can leave the frameless window black or
 // display stale surfaces from other apps. Software compositing is more stable
@@ -22,7 +24,10 @@ if (process.platform === "darwin") app.disableHardwareAcceleration();
 
 const appIconPath = join(app.getAppPath(), "resources/app-icon.png");
 const selectedAttachmentPaths = new Set<string>();
+const selectedMcpDirectories = new Set<string>();
+const activeMcpProbes = new Map<string, AbortController>();
 let conversationService: ConversationService | undefined;
+let isQuitting = false;
 let mainWindow: BrowserWindow | undefined;
 let selectedProjectPath: string | undefined;
 
@@ -38,32 +43,6 @@ const imageMimeTypes: Readonly<Record<string, string>> = {
 const maxAttachmentCount = 10;
 const maxImageBytes = 10 * 1024 * 1024;
 const maxTextBytes = 1024 * 1024;
-
-function findAgentCli(): string {
-	const appPath = app.getAppPath();
-	const candidates = [
-		process.env.PI_DESKTOP_AGENT_CLI,
-		resolve(appPath, "../../packages/coding-agent/dist/bundle/cli.js"),
-		resolve(process.cwd(), "packages/coding-agent/dist/bundle/cli.js"),
-		resolve(process.cwd(), "../../packages/coding-agent/dist/bundle/cli.js"),
-	].filter((candidate): candidate is string => Boolean(candidate));
-
-	const cliPath = candidates.find((candidate) => existsSync(candidate));
-	if (!cliPath) throw new Error("找不到 Pi Agent 构建产物。请先在仓库根目录运行 npm run build。");
-	return cliPath;
-}
-
-function findMcpExtension(): string | undefined {
-	const appPath = app.getAppPath();
-	const candidates = [
-		process.env.PI_DESKTOP_MCP_EXTENSION,
-		resolve(appPath, "../../packages/coding-agent/examples/extensions/mcp/index.ts"),
-		resolve(process.cwd(), "packages/coding-agent/examples/extensions/mcp/index.ts"),
-		resolve(process.cwd(), "../../packages/coding-agent/examples/extensions/mcp/index.ts"),
-	].filter((candidate): candidate is string => Boolean(candidate));
-
-	return candidates.find((candidate) => existsSync(candidate));
-}
 
 function getConversationService(): ConversationService {
 	if (!conversationService) throw new Error("对话服务尚未就绪");
@@ -188,13 +167,39 @@ function registerIpcHandlers(): void {
 		getConversationService().renameConversation(conversationId, title),
 	);
 	ipcMain.handle(IPC_CHANNELS.mcpList, () => readMcpServers());
-	ipcMain.handle(IPC_CHANNELS.mcpSave, (_event, servers: McpServers) => {
-		writeMcpServers(servers);
+	ipcMain.handle(IPC_CHANNELS.mcpAddCustom, (_event, servers: McpServers) => addMcpServers(servers));
+	ipcMain.handle(IPC_CHANNELS.mcpInstallBuiltin, (_event, id: string, configuration?: Record<string, string>) => {
+		const preset = catalogById.get(id);
+		if (!preset) throw new Error(`找不到内置插件 "${id}"`);
+		const directory = configuration?.directory?.trim();
+		if (preset.input && (!directory || !selectedMcpDirectories.has(directory))) {
+			throw new Error("插件目录没有经过用户选择");
+		}
+		return addMcpServers({
+			[id]: {
+				type: "stdio",
+				command: preset.command,
+				args: directory ? [...preset.args, directory] : preset.args,
+			},
+		});
 	});
-	ipcMain.handle(IPC_CHANNELS.mcpProbe, (_event, names: string[]) => {
+	ipcMain.handle(IPC_CHANNELS.mcpRemove, (_event, name: string) => removeMcpServer(name));
+	ipcMain.handle(IPC_CHANNELS.mcpTest, async (_event, name: string) => {
 		const { servers } = readMcpServers();
-		const requested = Array.isArray(names) ? names.filter((name): name is string => typeof name === "string") : [];
-		return probeMcpServers(servers, requested);
+		if (typeof name !== "string" || !servers[name]) {
+			return { status: "error", message: "配置里找不到这个插件" };
+		}
+		activeMcpProbes.get(name)?.abort();
+		const controller = new AbortController();
+		activeMcpProbes.set(name, controller);
+		try {
+			return await probeMcpServer(servers[name], undefined, controller.signal);
+		} finally {
+			if (activeMcpProbes.get(name) === controller) activeMcpProbes.delete(name);
+		}
+	});
+	ipcMain.handle(IPC_CHANNELS.mcpCancelTest, (_event, name: string) => {
+		activeMcpProbes.get(name)?.abort();
 	});
 	ipcMain.handle(IPC_CHANNELS.mcpRestore, () => restoreMcpBackup());
 	ipcMain.handle(IPC_CHANNELS.mcpReveal, async () => {
@@ -210,9 +215,12 @@ function registerIpcHandlers(): void {
 			properties: ["openDirectory"],
 			title: "选择要授权给 Agent 的目录",
 		});
-		return selection.canceled ? null : (selection.filePaths[0] ?? null);
+		const directory = selection.canceled ? undefined : selection.filePaths[0];
+		if (directory) selectedMcpDirectories.add(directory);
+		return directory ?? null;
 	});
-	ipcMain.handle(IPC_CHANNELS.skillList, () => listInstalledSkills(selectedProjectPath));
+	ipcMain.handle(IPC_CHANNELS.skillList, () => getConversationService().listSkills());
+	ipcMain.handle(IPC_CHANNELS.skillRefresh, () => getConversationService().refreshSkills());
 	ipcMain.handle(IPC_CHANNELS.skillReveal, async () => {
 		await shell.openPath(ensurePersonalSkillsDirectory());
 	});
@@ -283,25 +291,49 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-	if (process.platform === "darwin") app.dock?.setIcon(appIconPath);
-	conversationService = new ConversationService({
-		agentCliPath: findAgentCli,
-		emit: (event) => mainWindow?.webContents.send(IPC_CHANNELS.agentEvent, event),
-		freeChatCwd: app.getPath("userData"),
-		mcpExtensionPath: findMcpExtension,
-	});
-	registerIpcHandlers();
-	createWindow();
-	app.on("activate", () => {
-		if (BrowserWindow.getAllWindows().length === 0) createWindow();
-	});
+	try {
+		const runtimeAssets = resolveRuntimeAssets({
+			agentCliOverride: process.env.PI_DESKTOP_AGENT_CLI,
+			appPath: app.getAppPath(),
+			cwd: process.cwd(),
+			isPackaged: app.isPackaged,
+			mcpExtensionOverride: process.env.PI_DESKTOP_MCP_EXTENSION,
+			resourcesPath: process.resourcesPath,
+		});
+		if (process.platform === "darwin") app.dock?.setIcon(appIconPath);
+		conversationService = new ConversationService({
+			agentCliPath: () => runtimeAssets.agentCliPath,
+			emit: (event) => mainWindow?.webContents.send(IPC_CHANNELS.agentEvent, event),
+			freeChatCwd: app.getPath("userData"),
+			mcpExtensionPath: () => runtimeAssets.mcpExtensionPath,
+		});
+		registerIpcHandlers();
+		createWindow();
+		app.on("activate", () => {
+			if (BrowserWindow.getAllWindows().length === 0) createWindow();
+		});
+	} catch (error) {
+		dialog.showErrorBox("DDClaw 启动失败", error instanceof Error ? error.message : String(error));
+		app.quit();
+	}
 });
 
 app.on("window-all-closed", () => {
+	for (const controller of activeMcpProbes.values()) controller.abort();
 	void conversationService?.stop();
 	if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", () => {
-	void conversationService?.stop().finally(() => conversationService?.close());
+app.on("before-quit", (event) => {
+	if (isQuitting) return;
+	event.preventDefault();
+	isQuitting = true;
+	for (const controller of activeMcpProbes.values()) controller.abort();
+	const stop = conversationService?.stop() ?? Promise.resolve();
+	void stop
+		.catch((error: unknown) => console.error("Failed to stop desktop agent", error))
+		.finally(() => {
+			conversationService?.close();
+			app.quit();
+		});
 });

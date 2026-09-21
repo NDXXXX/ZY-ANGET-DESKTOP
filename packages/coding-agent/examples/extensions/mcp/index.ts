@@ -18,6 +18,7 @@ import { loadMcpConfig, type ServerConfig } from "./config.ts";
 import { createMcpClient, type McpClient, type McpContent, type McpTool } from "./mcp-client.ts";
 
 const CONNECT_TIMEOUT_MS = 30_000;
+const MAX_CONCURRENT_CONNECTIONS = 3;
 
 interface ServerConnection {
 	name: string;
@@ -187,7 +188,11 @@ export default function mcpExtension(pi: ExtensionAPI) {
 		return count;
 	}
 
-	async function connectServer(name: string, serverConfig: ServerConfig, ctx: ExtensionContext): Promise<void> {
+	async function connectServer(
+		name: string,
+		serverConfig: ServerConfig,
+		ctx: ExtensionContext,
+	): Promise<ServerConnection> {
 		const connection: ServerConnection = {
 			name,
 			config: serverConfig,
@@ -205,11 +210,9 @@ export default function mcpExtension(pi: ExtensionAPI) {
 			connection.error = error instanceof Error ? error.message : String(error);
 			await connection.client.close().catch(() => {});
 			ctx.ui.notify(`MCP server "${name}" failed to connect: ${connection.error}`, "warning");
-			return;
+			return connection;
 		}
-
-		const count = registerServerTools(connection);
-		ctx.ui.notify(`Connected to MCP server "${name}": ${count} tool(s)`, "info");
+		return connection;
 	}
 
 	/** Drops connections for servers that are no longer configured. */
@@ -233,18 +236,41 @@ export default function mcpExtension(pi: ExtensionAPI) {
 		}
 		await closeUnconfigured(config.servers);
 
-		for (const [name, serverConfig] of Object.entries(config.servers)) {
+		const entries = Object.entries(config.servers);
+		const ready = new Map<string, { connection: ServerConnection; reused: boolean }>();
+		const pending: Array<[string, ServerConfig]> = [];
+		for (const [name, serverConfig] of entries) {
 			const existing = connections.get(name);
 			if (existing?.connected && sameConfig(existing.config, serverConfig)) {
-				// Reuse the live connection: re-register its tools and stay silent.
-				registerServerTools(existing);
+				ready.set(name, { connection: existing, reused: true });
 				continue;
 			}
 			if (existing) {
 				connections.delete(name);
 				await existing.client.close().catch(() => {});
 			}
-			await connectServer(name, serverConfig, ctx);
+			pending.push([name, serverConfig]);
+		}
+
+		let nextIndex = 0;
+		const workers = Array.from({ length: Math.min(MAX_CONCURRENT_CONNECTIONS, pending.length) }, async () => {
+			for (;;) {
+				const entry = pending[nextIndex++];
+				if (!entry) return;
+				const [name, serverConfig] = entry;
+				const connection = await connectServer(name, serverConfig, ctx);
+				ready.set(name, { connection, reused: false });
+			}
+		});
+		await Promise.all(workers);
+
+		// Registration order affects the system prompt, so preserve config order
+		// even though the connections above complete concurrently.
+		for (const [name] of entries) {
+			const result = ready.get(name);
+			if (!result?.connection.connected) continue;
+			const count = registerServerTools(result.connection);
+			if (!result.reused) ctx.ui.notify(`Connected to MCP server "${name}": ${count} tool(s)`, "info");
 		}
 	});
 

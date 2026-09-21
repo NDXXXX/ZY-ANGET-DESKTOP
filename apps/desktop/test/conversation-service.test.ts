@@ -6,6 +6,7 @@ import { AgentProcess, type AgentProcessOptions } from "../src/main/agent-proces
 import { ConversationService } from "../src/main/conversation-service.ts";
 
 class FakeAgentProcess extends AgentProcess {
+	reloadCount = 0;
 	running = false;
 	startCalls: AgentProcessOptions[] = [];
 
@@ -25,6 +26,26 @@ class FakeAgentProcess extends AgentProcess {
 
 	override async stop(): Promise<void> {
 		this.running = false;
+	}
+
+	override async getSkills(): Promise<unknown> {
+		return {
+			diagnostics: [{ message: "duplicate", path: "/project/skill/SKILL.md", type: "collision" }],
+			skills: [
+				{
+					description: "A project skill",
+					disableModelInvocation: false,
+					filePath: "/project/skill/SKILL.md",
+					name: "project-skill",
+					scope: "project",
+					source: "local",
+				},
+			],
+		};
+	}
+
+	override async reloadResources(): Promise<void> {
+		this.reloadCount += 1;
 	}
 
 	private state(sessionId = "session") {
@@ -76,5 +97,31 @@ describe("ConversationService", () => {
 		await service.createConversation({ model: "other-model", provider: "provider" });
 
 		expect(agent.startCalls).toHaveLength(2);
+	});
+
+	it("returns the Agent resource loader's skills and diagnostics", async () => {
+		await service.createConversation({ model: "model", provider: "provider" });
+
+		expect(await service.listSkills()).toEqual({
+			diagnostics: [{ message: "duplicate", path: "/project/skill/SKILL.md", type: "collision" }],
+			skills: [
+				{
+					description: "A project skill",
+					disableModelInvocation: false,
+					name: "project-skill",
+					path: "/project/skill/SKILL.md",
+					scope: "project",
+					source: "local",
+				},
+			],
+		});
+	});
+
+	it("reloads Agent resources before refreshing skills", async () => {
+		await service.createConversation({ model: "model", provider: "provider" });
+
+		await service.refreshSkills();
+
+		expect(agent.reloadCount).toBe(1);
 	});
 });

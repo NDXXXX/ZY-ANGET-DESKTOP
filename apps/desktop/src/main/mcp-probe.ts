@@ -12,13 +12,19 @@
  * on ("找不到命令 npx", "地址不存在"), instead of a silent "已安装".
  */
 
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import crossSpawn from "cross-spawn";
 import type { McpHttpServer, McpProbeResult, McpServerConfig, McpStdioServer } from "../shared/ipc.ts";
 
 const PROBE_TIMEOUT_MS = 20_000;
 const PROTOCOL_VERSION = "2025-03-26";
 const MAX_TOOL_PAGES = 5;
+const activeProbeChildren = new Set<ChildProcessWithoutNullStreams>();
+
+process.once("exit", () => {
+	for (const child of activeProbeChildren) child.kill("SIGTERM");
+});
 
 class ProbeFailure extends Error {
 	readonly detail?: string;
@@ -67,6 +73,28 @@ async function countToolsPaged(request: (params: Record<string, unknown>) => Pro
 interface StdioChannel {
 	notify(method: string, params?: Record<string, unknown>): void;
 	request(method: string, params: Record<string, unknown>): Promise<unknown>;
+}
+
+function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {
+	if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+	return new Promise((resolve) => {
+		const onExit = () => finish(true);
+		const timer = setTimeout(() => finish(false), timeoutMs);
+		const finish = (exited: boolean) => {
+			clearTimeout(timer);
+			child.off("exit", onExit);
+			resolve(exited);
+		};
+		child.once("exit", onExit);
+	});
+}
+
+async function closeStdioChild(child: ChildProcessWithoutNullStreams): Promise<void> {
+	child.stdin.end();
+	if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+	if (await waitForExit(child, 2_000)) return;
+	if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+	await waitForExit(child, 2_000);
 }
 
 function createStdioChannel(child: ChildProcessWithoutNullStreams): StdioChannel {
@@ -119,81 +147,88 @@ function createStdioChannel(child: ChildProcessWithoutNullStreams): StdioChannel
 	};
 }
 
-function probeStdio(config: McpStdioServer, timeoutMs: number): Promise<number> {
-	return new Promise<number>((resolve, reject) => {
-		let child: ChildProcessWithoutNullStreams;
-		try {
-			child = spawn(config.command, config.args ?? [], {
-				env: { ...process.env, ...config.env },
-				shell: false,
-				stdio: ["pipe", "pipe", "pipe"],
-			});
-		} catch (error) {
-			reject(new ProbeFailure(`无法启动：${error instanceof Error ? error.message : String(error)}`));
-			return;
-		}
+async function probeStdio(config: McpStdioServer, timeoutMs: number, signal?: AbortSignal): Promise<number> {
+	let child: ChildProcessWithoutNullStreams;
+	try {
+		child = crossSpawn(config.command, config.args ?? [], {
+			env: { ...process.env, ...config.env },
+			shell: false,
+			stdio: ["pipe", "pipe", "pipe"],
+		}) as ChildProcessWithoutNullStreams;
+	} catch (error) {
+		throw new ProbeFailure(`无法启动：${error instanceof Error ? error.message : String(error)}`);
+	}
+	activeProbeChildren.add(child);
 
-		let stderr = "";
-		let settled = false;
-		child.stderr.on("data", (chunk: Buffer) => {
-			stderr = `${stderr}${chunk.toString("utf8")}`.slice(-4000);
-		});
+	let stderr = "";
+	child.stderr.on("data", (chunk: Buffer) => {
+		stderr = `${stderr}${chunk.toString("utf8")}`.slice(-4000);
+	});
 
-		const finish = (error?: Error, toolCount?: number): void => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			child.kill("SIGTERM");
-			setTimeout(() => child.kill("SIGKILL"), 2000).unref();
-			if (error) reject(error);
-			else resolve(toolCount ?? 0);
-		};
-
-		const timer = setTimeout(() => {
-			finish(
-				new ProbeFailure(`连接超时（${timeoutMs / 1000} 秒）`, {
-					detail: stderr.trim() || undefined,
-					hint: "首次安装某个插件时它可能需要下载依赖，会比较慢。可以先在终端里手动运行一次同样的命令完成下载。",
-				}),
-			);
-		}, timeoutMs);
-
-		child.once("error", (error: NodeJS.ErrnoException) => {
-			if (error.code === "ENOENT") {
+	try {
+		return await new Promise<number>((resolve, reject) => {
+			let settled = false;
+			const finish = (error?: Error, toolCount?: number): void => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", onAbort);
+				if (error) reject(error);
+				else resolve(toolCount ?? 0);
+			};
+			const onAbort = () => finish(new ProbeFailure("检测已取消"));
+			const timer = setTimeout(() => {
 				finish(
-					new ProbeFailure(`找不到命令 ${config.command}`, {
-						hint: "请确认已安装 Node.js（npx 随 Node 一起提供）。如果 DDClaw 是从访达或 Dock 启动的，它可能读不到终端里的 PATH。",
+					new ProbeFailure(`连接超时（${timeoutMs / 1000} 秒）`, {
+						detail: stderr.trim() || undefined,
+						hint: "首次安装某个插件时它可能需要下载依赖，会比较慢。可以先在终端里手动运行一次同样的命令完成下载。",
 					}),
 				);
-				return;
-			}
-			finish(new ProbeFailure(`无法启动：${error.message}`));
-		});
+			}, timeoutMs);
 
-		child.once("exit", (code) => {
-			finish(
-				new ProbeFailure(`服务器进程已退出（退出码 ${code ?? "未知"}）`, {
-					detail: stderr.trim() || undefined,
-					hint: "可以在终端里手动运行同样的命令，查看它输出的错误。",
-				}),
-			);
-		});
+			if (signal?.aborted) onAbort();
+			else signal?.addEventListener("abort", onAbort, { once: true });
 
-		const channel = createStdioChannel(child);
-		void (async () => {
-			await channel.request("initialize", {
-				protocolVersion: PROTOCOL_VERSION,
-				capabilities: {},
-				clientInfo: { name: "ddclaw-probe", version: "1.0.0" },
+			child.once("error", (error: NodeJS.ErrnoException) => {
+				if (error.code === "ENOENT") {
+					finish(
+						new ProbeFailure(`找不到命令 ${config.command}`, {
+							hint: "请确认已安装 Node.js（npx 随 Node 一起提供）。如果 DDClaw 是从访达或 Dock 启动的，它可能读不到终端里的 PATH。",
+						}),
+					);
+					return;
+				}
+				finish(new ProbeFailure(`无法启动：${error.message}`));
 			});
-			channel.notify("notifications/initialized");
-			const total = await countToolsPaged((params) => channel.request("tools/list", params));
-			finish(undefined, total);
-		})().catch((error: unknown) => {
-			if (error instanceof ProbeFailure) finish(error);
-			else finish(new ProbeFailure(error instanceof Error ? error.message : String(error)));
+
+			child.once("exit", (code) => {
+				finish(
+					new ProbeFailure(`服务器进程已退出（退出码 ${code ?? "未知"}）`, {
+						detail: stderr.trim() || undefined,
+						hint: "可以在终端里手动运行同样的命令，查看它输出的错误。",
+					}),
+				);
+			});
+
+			const channel = createStdioChannel(child);
+			void (async () => {
+				await channel.request("initialize", {
+					protocolVersion: PROTOCOL_VERSION,
+					capabilities: {},
+					clientInfo: { name: "ddclaw-probe", version: "1.0.0" },
+				});
+				channel.notify("notifications/initialized");
+				const total = await countToolsPaged((params) => channel.request("tools/list", params));
+				finish(undefined, total);
+			})().catch((error: unknown) => {
+				if (error instanceof ProbeFailure) finish(error);
+				else finish(new ProbeFailure(error instanceof Error ? error.message : String(error)));
+			});
 		});
-	});
+	} finally {
+		await closeStdioChild(child);
+		activeProbeChildren.delete(child);
+	}
 }
 
 /** Splits complete SSE events out of an incrementally decoded buffer. */
@@ -320,12 +355,19 @@ async function probeHttp(config: McpHttpServer, signal: AbortSignal): Promise<nu
 	return countToolsPaged((params) => post("tools/list", params, true));
 }
 
-export async function probeMcpServer(config: McpServerConfig, timeoutMs = PROBE_TIMEOUT_MS): Promise<McpProbeResult> {
+export async function probeMcpServer(
+	config: McpServerConfig,
+	timeoutMs = PROBE_TIMEOUT_MS,
+	signal?: AbortSignal,
+): Promise<McpProbeResult> {
 	try {
 		const toolCount =
 			config.type === "stdio"
-				? await probeStdio(config, timeoutMs)
-				: await probeHttp(config, AbortSignal.timeout(timeoutMs));
+				? await probeStdio(config, timeoutMs, signal)
+				: await probeHttp(
+						config,
+						signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
+					);
 		return { status: "ready", toolCount };
 	} catch (error) {
 		if (error instanceof ProbeFailure) {

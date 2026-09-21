@@ -13,7 +13,7 @@ import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
-import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
+import type { RpcCommand, RpcResponse, RpcSessionState, RpcSkillsResult, RpcSlashCommand } from "./rpc-types.ts";
 
 // ============================================================================
 // Types
@@ -250,6 +250,17 @@ export class RpcClient {
 	async getState(): Promise<RpcSessionState> {
 		const response = await this.send({ type: "get_state" });
 		return this.getData(response);
+	}
+
+	/** Get the skills currently loaded by the Agent resource loader. */
+	async getSkills(): Promise<RpcSkillsResult> {
+		const response = await this.send({ type: "get_skills" });
+		return this.getData(response);
+	}
+
+	/** Reload settings and resources for the current Agent session. */
+	async reloadResources(): Promise<void> {
+		await this.send({ type: "reload_resources" });
 	}
 
 	/**

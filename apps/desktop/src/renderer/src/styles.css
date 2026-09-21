@@ -925,6 +925,23 @@ button:disabled {
 	font-size: 14px;
 }
 
+.mcp-panel-header > button {
+	height: 32px;
+	padding: 0 11px;
+	border: 1px solid var(--line-strong);
+	border-radius: 9px;
+	color: var(--text);
+	background: var(--panel);
+	cursor: pointer;
+	font: inherit;
+	font-size: 12px;
+}
+
+.mcp-panel-header > button:disabled {
+	opacity: 0.55;
+	cursor: default;
+}
+
 .mcp-header-actions {
 	display: flex;
 	align-items: center;
@@ -1270,6 +1287,12 @@ button:disabled {
 	font-size: 11px;
 }
 
+.mcp-market-copy p.mcp-package-version {
+	color: var(--faint);
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	font-size: 10px;
+}
+
 .mcp-directory {
 	max-width: 100%;
 	height: 28px;
@@ -1472,6 +1495,35 @@ button:disabled {
 .skill-filters button.active {
 	color: var(--text);
 	background: var(--hover);
+}
+
+.skill-diagnostics {
+	margin: 0 0 14px;
+	padding: 10px 12px;
+	border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--line));
+	border-radius: 10px;
+	color: var(--muted);
+	font-size: 12px;
+}
+
+.skill-diagnostics summary {
+	cursor: pointer;
+	color: var(--text);
+}
+
+.skill-diagnostics ul {
+	margin: 10px 0 0;
+	padding-left: 18px;
+}
+
+.skill-diagnostics li + li {
+	margin-top: 8px;
+}
+
+.skill-diagnostics code {
+	display: block;
+	margin-top: 3px;
+	word-break: break-all;
 }
 
 .skill-grid {

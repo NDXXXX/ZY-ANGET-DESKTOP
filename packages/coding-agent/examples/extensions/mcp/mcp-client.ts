@@ -9,11 +9,13 @@
  * (plus read resources) is implemented.
  */
 
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import crossSpawn from "cross-spawn";
 import type { HttpServerConfig, ServerConfig, StdioServerConfig } from "./config.ts";
 
 const MCP_PROTOCOL_VERSION = "2025-03-26";
+const MCP_SHUTDOWN_TIMEOUT_MS = 5_000;
 
 /** Upper bound on `tools/list` pages followed, so a buggy server cannot loop forever. */
 const MCP_MAX_TOOL_PAGES = 50;
@@ -52,6 +54,26 @@ interface Transport {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
+}
+
+function waitForExit(proc: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {
+	if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve(true);
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = (exited: boolean) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			proc.off("exit", onExit);
+			proc.off("error", onError);
+			resolve(exited);
+		};
+		const onExit = () => finish(true);
+		const onError = () => finish(true);
+		const timer = setTimeout(() => finish(false), timeoutMs);
+		proc.once("exit", onExit);
+		proc.once("error", onError);
+	});
 }
 
 function responsePayload(message: Record<string, unknown>): unknown {
@@ -160,13 +182,14 @@ class StdioTransport implements Transport {
 	private lineBuffer = "";
 	private stderr = "";
 	private closed = false;
+	private closing: Promise<void> | undefined;
 
 	constructor(config: StdioServerConfig) {
-		this.proc = spawn(config.command, config.args ?? [], {
+		this.proc = crossSpawn(config.command, config.args ?? [], {
 			env: { ...process.env, ...config.env },
 			shell: false,
 			stdio: ["pipe", "pipe", "pipe"],
-		});
+		}) as ChildProcessWithoutNullStreams;
 		this.proc.stdout.on("data", (chunk: Buffer) => this.onData(this.decoder.write(chunk)));
 		this.proc.stderr.on("data", (chunk: Buffer) => {
 			this.stderr = `${this.stderr}${chunk.toString("utf8")}`.slice(-20_000);
@@ -207,9 +230,11 @@ class StdioTransport implements Transport {
 
 	private onExit(): void {
 		this.closed = true;
-		for (const pending of this.pending.values()) {
-			pending.reject(new Error(`MCP server exited: ${this.stderr.trim() || "no stderr"}`));
-		}
+		this.rejectPending(new Error(`MCP server exited: ${this.stderr.trim() || "no stderr"}`));
+	}
+
+	private rejectPending(error: Error): void {
+		for (const pending of this.pending.values()) pending.reject(error);
 		this.pending.clear();
 	}
 
@@ -252,18 +277,28 @@ class StdioTransport implements Transport {
 	}
 
 	async close(): Promise<void> {
+		if (this.closing) return this.closing;
 		if (this.closed) return;
 		this.closed = true;
 		const proc = this.proc;
-		proc.kill("SIGTERM");
-		setTimeout(() => {
-			if (!proc.killed) proc.kill("SIGKILL");
-		}, 5000);
+		this.rejectPending(new Error("MCP server is not running"));
+		this.closing = (async () => {
+			proc.stdin.end();
+			if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGTERM");
+			if (await waitForExit(proc, MCP_SHUTDOWN_TIMEOUT_MS)) return;
+			if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
+			if (!(await waitForExit(proc, MCP_SHUTDOWN_TIMEOUT_MS))) {
+				throw new Error("MCP server did not exit after SIGKILL");
+			}
+		})();
+		return this.closing;
 	}
 
 	kill(): void {
-		if (this.closed) return;
 		this.closed = true;
+		this.rejectPending(new Error("MCP server is not running"));
+		this.proc.stdin.destroy();
+		if (this.proc.exitCode !== null || this.proc.signalCode !== null) return;
 		// SIGTERM rather than SIGKILL: with `npx -y <pkg>` the child is npx, which
 		// has to shut its own child down for us.
 		this.proc.kill("SIGTERM");

@@ -25,6 +25,26 @@ interface PendingRequest {
 	timer: ReturnType<typeof setTimeout>;
 }
 
+function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {
+	if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = (exited: boolean) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			child.off("exit", onExit);
+			child.off("error", onError);
+			resolve(exited);
+		};
+		const onExit = () => finish(true);
+		const onError = () => finish(true);
+		const timer = setTimeout(() => finish(false), timeoutMs);
+		child.once("exit", onExit);
+		child.once("error", onError);
+	});
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
@@ -36,7 +56,13 @@ export class AgentProcess {
 	private lineBuffer = "";
 	private pending = new Map<string, PendingRequest>();
 	private requestId = 0;
+	private readonly shutdownTimeoutMs: number;
 	private stderr = "";
+	private stopping: Promise<void> | undefined;
+
+	constructor(shutdownTimeoutMs = 5_000) {
+		this.shutdownTimeoutMs = shutdownTimeoutMs;
+	}
 
 	onEvent(listener: (event: AgentProcessEvent) => void): void {
 		this.eventListener = listener;
@@ -106,16 +132,40 @@ export class AgentProcess {
 		return result.entries.filter(isRecord);
 	}
 
+	async getSkills(): Promise<unknown> {
+		return this.send({ type: "get_skills" });
+	}
+
+	async reloadResources(): Promise<void> {
+		await this.send({ type: "reload_resources" });
+	}
+
 	async abort(): Promise<void> {
 		await this.send({ type: "abort" });
 	}
 
 	async stop(): Promise<void> {
+		if (this.stopping) return this.stopping;
 		const child = this.child;
 		if (!child) return;
 		this.child = undefined;
-		child.kill("SIGTERM");
 		this.rejectPending(new Error("Agent process stopped"));
+
+		const stopping = (async () => {
+			child.stdin.end();
+			if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+			if (await waitForExit(child, this.shutdownTimeoutMs)) return;
+			if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+			if (!(await waitForExit(child, this.shutdownTimeoutMs))) {
+				throw new Error("Agent process did not exit after SIGKILL");
+			}
+		})();
+		this.stopping = stopping;
+		try {
+			await stopping;
+		} finally {
+			if (this.stopping === stopping) this.stopping = undefined;
+		}
 	}
 
 	private consumeOutput(chunk: string): void {

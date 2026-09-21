@@ -10,9 +10,11 @@ import {
 
 const bridge: PiDesktopBridge = {
 	abortAgent: () => ipcRenderer.invoke(IPC_CHANNELS.agentAbort),
+	addCustomMcpServers: (servers: McpServers) => ipcRenderer.invoke(IPC_CHANNELS.mcpAddCustom, servers),
 	archiveConversation: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationArchive, conversationId),
 	bootstrapConversations: (options: CreateConversationOptions) =>
 		ipcRenderer.invoke(IPC_CHANNELS.conversationBootstrap, options),
+	cancelMcpProbe: (name) => ipcRenderer.invoke(IPC_CHANNELS.mcpCancelTest, name),
 	closeWindow: () => ipcRenderer.invoke(IPC_CHANNELS.windowClose),
 	createConversation: (options: CreateConversationOptions) =>
 		ipcRenderer.invoke(IPC_CHANNELS.conversationCreate, options),
@@ -20,6 +22,8 @@ const bridge: PiDesktopBridge = {
 	listConversations: () => ipcRenderer.invoke(IPC_CHANNELS.conversationList),
 	listMcpServers: () => ipcRenderer.invoke(IPC_CHANNELS.mcpList),
 	listSkills: () => ipcRenderer.invoke(IPC_CHANNELS.skillList),
+	refreshSkills: () => ipcRenderer.invoke(IPC_CHANNELS.skillRefresh),
+	installBuiltinPlugin: (id, configuration) => ipcRenderer.invoke(IPC_CHANNELS.mcpInstallBuiltin, id, configuration),
 	minimizeWindow: () => ipcRenderer.invoke(IPC_CHANNELS.windowMinimize),
 	onAgentEvent: (listener) => {
 		const handler = (_event: IpcRendererEvent, agentEvent: DesktopAgentEvent) => listener(agentEvent);
@@ -27,13 +31,13 @@ const bridge: PiDesktopBridge = {
 		return () => ipcRenderer.removeListener(IPC_CHANNELS.agentEvent, handler);
 	},
 	openConversation: (conversationId) => ipcRenderer.invoke(IPC_CHANNELS.conversationOpen, conversationId),
-	probeMcpServers: (names: string[]) => ipcRenderer.invoke(IPC_CHANNELS.mcpProbe, names),
+	probeMcpServer: (name) => ipcRenderer.invoke(IPC_CHANNELS.mcpTest, name),
 	renameConversation: (conversationId, title) =>
 		ipcRenderer.invoke(IPC_CHANNELS.conversationRename, conversationId, title),
 	restoreMcpBackup: () => ipcRenderer.invoke(IPC_CHANNELS.mcpRestore),
 	revealMcpConfig: () => ipcRenderer.invoke(IPC_CHANNELS.mcpReveal),
 	revealSkillsDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.skillReveal),
-	saveMcpServers: (servers: McpServers) => ipcRenderer.invoke(IPC_CHANNELS.mcpSave, servers),
+	removeMcpServer: (name) => ipcRenderer.invoke(IPC_CHANNELS.mcpRemove, name),
 	selectAttachments: () => ipcRenderer.invoke(IPC_CHANNELS.attachmentSelect),
 	selectDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.mcpSelectDirectory),
 	selectProject: () => ipcRenderer.invoke(IPC_CHANNELS.projectSelect),

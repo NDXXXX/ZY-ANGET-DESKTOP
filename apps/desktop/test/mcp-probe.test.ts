@@ -1,4 +1,7 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { probeMcpServer } from "../src/main/mcp-probe.ts";
@@ -72,6 +75,25 @@ describe("probeMcpServer", () => {
 		expect(result.status).toBe("error");
 		expect(result.message).toContain("找不到命令 ddclaw-no-such-binary");
 		expect(result.hint).toContain("PATH");
+	});
+
+	it("force-kills a stdio probe that does not exit after a successful check", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "ddclaw-probe-"));
+		const pidFile = join(directory, "pid");
+		try {
+			const result = await probeMcpServer({
+				type: "stdio",
+				command: process.execPath,
+				args: [echoServer],
+				env: { MCP_ECHO_IGNORE_SHUTDOWN: "1", MCP_ECHO_PID_FILE: pidFile },
+			});
+			const pid = Number(readFileSync(pidFile, "utf8"));
+
+			expect(result).toEqual({ status: "ready", toolCount: 2 });
+			expect(() => process.kill(pid, 0)).toThrow();
+		} finally {
+			rmSync(directory, { force: true, recursive: true });
+		}
 	});
 
 	it("reads an SSE response that stays open, page by page", async () => {

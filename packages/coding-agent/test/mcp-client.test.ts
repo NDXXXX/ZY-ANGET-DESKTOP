@@ -310,4 +310,23 @@ describe("StdioTransport", () => {
 		await expect.poll(() => isProcessAlive(pid), { timeout: 5000 }).toBe(false);
 		await expect(client.listTools()).rejects.toThrow("MCP server is not running");
 	});
+
+	it("close() force-kills a server that ignores graceful shutdown", async () => {
+		directory = mkdtempSync(join(tmpdir(), "pi-mcp-stubborn-"));
+		const pidFile = join(directory, "pid");
+		const client = createMcpClient({
+			type: "stdio",
+			command: process.execPath,
+			args: [echoServerFixture],
+			env: { MCP_ECHO_IGNORE_SHUTDOWN: "1", MCP_ECHO_PID_FILE: pidFile },
+		});
+
+		await client.connect();
+		await expect.poll(() => existsSync(pidFile), { timeout: 5000 }).toBe(true);
+		const pid = Number(readFileSync(pidFile, "utf8"));
+
+		await client.close();
+
+		expect(isProcessAlive(pid)).toBe(false);
+	});
 });

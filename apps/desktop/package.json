@@ -7,21 +7,112 @@
 	"scripts": {
 		"build": "node scripts/build.mjs",
 		"check": "tsgo --noEmit -p tsconfig.json",
-		"dev": "node scripts/dev.mjs"
+		"dev": "node scripts/dev.mjs",
+		"package:mac": "npm run build && electron-builder --mac dmg zip",
+		"package:win": "npm run build && electron-builder --win nsis zip --x64",
+		"smoke:package:mac": "node scripts/smoke-package-mac.mjs",
+		"smoke:package:win": "node scripts/smoke-package-win.mjs"
 	},
 	"dependencies": {
+		"cross-spawn": "7.0.6",
 		"react": "19.3.0",
 		"react-dom": "19.3.0"
 	},
 	"devDependencies": {
 		"@types/node": "22.19.19",
+		"@types/cross-spawn": "6.0.6",
 		"@types/react": "19.3.0",
 		"@types/react-dom": "19.3.0",
 		"@vitejs/plugin-react": "5.1.4",
 		"electron": "44.4.1",
+		"electron-builder": "26.15.3",
 		"esbuild": "0.28.2",
 		"typescript": "5.9.3",
 		"vite": "7.3.6"
+	},
+	"build": {
+		"appId": "com.ddclaw.desktop",
+		"productName": "DDClaw",
+		"asar": true,
+		"directories": {
+			"output": "release"
+		},
+		"files": [
+			"dist/**/*",
+			"resources/app-icon.png",
+			"package.json"
+		],
+		"extraResources": [
+			{
+				"from": "../../packages/coding-agent/package.json",
+				"to": "runtime/agent/package.json"
+			},
+			{
+				"from": "../../packages/coding-agent/dist",
+				"to": "runtime/agent/dist"
+			},
+			{
+				"from": "../../packages/coding-agent/docs",
+				"to": "runtime/agent/docs"
+			},
+			{
+				"from": "../../packages/coding-agent/examples",
+				"to": "runtime/agent/examples"
+			},
+			{
+				"from": "../../packages/coding-agent/README.md",
+				"to": "runtime/agent/README.md"
+			},
+			{
+				"from": "../../packages/coding-agent/CHANGELOG.md",
+				"to": "runtime/agent/CHANGELOG.md"
+			},
+			{
+				"from": "../../packages/chord",
+				"to": "runtime/agent/node_modules/@earendil-works/chord",
+				"filter": [
+					"package.json",
+					"README.md",
+					"dist/**/*"
+				]
+			},
+			{
+				"from": "../../node_modules/jiti",
+				"to": "runtime/agent/node_modules/jiti"
+			},
+			{
+				"from": "../../node_modules/@silvia-odwyer/photon-node",
+				"to": "runtime/agent/node_modules/@silvia-odwyer/photon-node"
+			},
+			{
+				"from": "../../packages/coding-agent/examples/extensions/mcp",
+				"to": "runtime/extensions/mcp",
+				"filter": [
+					"index.ts",
+					"config.ts",
+					"mcp-client.ts"
+				]
+			},
+			{
+				"from": "../../node_modules",
+				"to": "runtime/extensions/mcp/node_modules",
+				"filter": [
+					"cross-spawn/**/*",
+					"isexe/**/*",
+					"path-key/**/*",
+					"shebang-command/**/*",
+					"shebang-regex/**/*",
+					"which/**/*"
+				]
+			}
+		],
+		"mac": {
+			"category": "public.app-category.developer-tools",
+			"icon": "resources/app-icon.png"
+		},
+		"win": {
+			"icon": "resources/app-icon.ico"
+		}
 	},
 	"engines": {
 		"node": ">=22.19.0"

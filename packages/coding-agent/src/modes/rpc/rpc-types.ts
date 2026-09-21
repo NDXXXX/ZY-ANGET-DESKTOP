@@ -29,6 +29,8 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| { id?: string; type: "get_skills" }
+	| { id?: string; type: "reload_resources" }
 
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
@@ -109,6 +111,26 @@ export interface RpcSessionState {
 	pendingMessageCount: number;
 }
 
+export interface RpcSkillInfo {
+	description: string;
+	disableModelInvocation: boolean;
+	filePath: string;
+	name: string;
+	scope: "user" | "project" | "temporary";
+	source: string;
+}
+
+export interface RpcSkillDiagnostic {
+	message: string;
+	path?: string;
+	type: "warning" | "error" | "collision";
+}
+
+export interface RpcSkillsResult {
+	diagnostics: RpcSkillDiagnostic[];
+	skills: RpcSkillInfo[];
+}
+
 // ============================================================================
 // RPC Responses (stdout)
 // ============================================================================
@@ -132,6 +154,8 @@ export type RpcResponse =
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
+	| { id?: string; type: "response"; command: "get_skills"; success: true; data: RpcSkillsResult }
+	| { id?: string; type: "response"; command: "reload_resources"; success: true }
 
 	// Model
 	| {

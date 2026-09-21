@@ -1,7 +1,7 @@
 # MCP 连接复用设计文档
 
-状态：已实现  
-更新时间：2026-09-19  
+状态：已实现
+更新时间：2026-09-19
 适用范围：`packages/coding-agent/examples/extensions/mcp`
 
 ## 1. 背景与问题

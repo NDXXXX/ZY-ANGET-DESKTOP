@@ -1,61 +1,29 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { discoverInstalledSkills } from "../src/main/skill-config.ts";
+import { ensurePersonalSkillsDirectory } from "../src/main/skill-config.ts";
 
 describe("skill-config", () => {
 	let directory: string;
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 
 	beforeEach(() => {
 		directory = join(tmpdir(), `ddclaw-skills-${crypto.randomUUID()}`);
 		mkdirSync(directory, { recursive: true });
+		process.env.PI_CODING_AGENT_DIR = directory;
 	});
 
 	afterEach(() => {
 		rmSync(directory, { force: true, recursive: true });
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	});
 
-	it("discovers nested Agent Skills with their scope", () => {
-		const personalRoot = join(directory, "personal");
-		const skillDirectory = join(personalRoot, "writing-helper");
-		mkdirSync(skillDirectory, { recursive: true });
-		writeFileSync(
-			join(skillDirectory, "SKILL.md"),
-			"---\nname: writing-helper\ndescription: Improve technical writing.\n---\nInstructions",
-		);
+	it("creates and returns the personal skills directory", () => {
+		const result = ensurePersonalSkillsDirectory();
 
-		expect(discoverInstalledSkills([{ path: personalRoot, scope: "personal" }])).toEqual([
-			{
-				description: "Improve technical writing.",
-				name: "writing-helper",
-				path: join(skillDirectory, "SKILL.md"),
-				scope: "personal",
-			},
-		]);
-	});
-
-	it("reads multiline descriptions and direct markdown skills", () => {
-		const projectRoot = join(directory, "project");
-		mkdirSync(projectRoot, { recursive: true });
-		writeFileSync(
-			join(projectRoot, "review.md"),
-			"---\nname: review\ndescription: >-\n  Review changes and\n  report concrete issues.\n---\nInstructions",
-		);
-
-		expect(discoverInstalledSkills([{ path: projectRoot, scope: "project" }])).toEqual([
-			{
-				description: "Review changes and report concrete issues.",
-				name: "review",
-				path: join(projectRoot, "review.md"),
-				scope: "project",
-			},
-		]);
-	});
-
-	it("skips markdown files without a skill description", () => {
-		writeFileSync(join(directory, "README.md"), "# Notes");
-
-		expect(discoverInstalledSkills([{ path: directory, scope: "personal" }])).toEqual([]);
+		expect(result).toBe(join(directory, "skills"));
+		expect(existsSync(result)).toBe(true);
 	});
 });

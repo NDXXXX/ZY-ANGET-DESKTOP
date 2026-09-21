@@ -106,13 +106,30 @@ export interface McpListResult {
 	servers: McpServers;
 }
 
-export type InstalledSkillScope = "personal" | "project";
+export interface McpMutationResult extends McpListResult {
+	names: string[];
+}
+
+export type InstalledSkillScope = "personal" | "project" | "temporary";
 
 export interface InstalledSkill {
 	description: string;
+	disableModelInvocation: boolean;
 	name: string;
 	path: string;
 	scope: InstalledSkillScope;
+	source: string;
+}
+
+export interface SkillDiagnostic {
+	message: string;
+	path?: string;
+	type: "warning" | "error" | "collision";
+}
+
+export interface SkillListResult {
+	diagnostics: SkillDiagnostic[];
+	skills: InstalledSkill[];
 }
 
 export interface DesktopAgentEvent {
@@ -126,21 +143,25 @@ export interface PiDesktopBridge {
 	abortAgent(): Promise<void>;
 	archiveConversation(conversationId: string): Promise<ConversationSummary[]>;
 	bootstrapConversations(options: CreateConversationOptions): Promise<ConversationBootstrap>;
+	cancelMcpProbe(name: string): Promise<void>;
 	closeWindow(): Promise<void>;
 	createConversation(options: CreateConversationOptions): Promise<ConversationDetail>;
 	deleteConversation(conversationId: string): Promise<ConversationSummary[]>;
 	listConversations(): Promise<ConversationSummary[]>;
 	listMcpServers(): Promise<McpListResult>;
-	listSkills(): Promise<InstalledSkill[]>;
+	listSkills(): Promise<SkillListResult>;
+	refreshSkills(): Promise<SkillListResult>;
+	addCustomMcpServers(servers: McpServers): Promise<McpMutationResult>;
+	installBuiltinPlugin(id: string, configuration?: Record<string, string>): Promise<McpMutationResult>;
 	minimizeWindow(): Promise<void>;
 	onAgentEvent(listener: (event: DesktopAgentEvent) => void): () => void;
 	openConversation(conversationId: string): Promise<ConversationDetail>;
-	probeMcpServers(names: string[]): Promise<Record<string, McpProbeResult>>;
+	probeMcpServer(name: string): Promise<McpProbeResult>;
 	renameConversation(conversationId: string, title: string): Promise<ConversationSummary[]>;
 	restoreMcpBackup(): Promise<McpListResult>;
 	revealMcpConfig(): Promise<void>;
 	revealSkillsDirectory(): Promise<void>;
-	saveMcpServers(servers: McpServers): Promise<void>;
+	removeMcpServer(name: string): Promise<McpListResult>;
 	selectAttachments(): Promise<SelectedAttachment[]>;
 	selectDirectory(): Promise<string | null>;
 	selectProject(): Promise<SelectedProject | null>;
@@ -170,12 +191,16 @@ export const IPC_CHANNELS = {
 	conversationPin: "conversation:pin",
 	conversationRename: "conversation:rename",
 	mcpList: "mcp:list",
-	mcpProbe: "mcp:probe",
+	mcpAddCustom: "mcp:add-custom",
+	mcpCancelTest: "mcp:cancel-test",
+	mcpInstallBuiltin: "mcp:install-builtin",
+	mcpRemove: "mcp:remove",
 	mcpRestore: "mcp:restore",
 	mcpReveal: "mcp:reveal",
-	mcpSave: "mcp:save",
 	mcpSelectDirectory: "mcp:select-directory",
+	mcpTest: "mcp:test",
 	skillList: "skill:list",
+	skillRefresh: "skill:refresh",
 	skillReveal: "skill:reveal",
 	projectSelect: "project:select",
 	windowClose: "window:close",

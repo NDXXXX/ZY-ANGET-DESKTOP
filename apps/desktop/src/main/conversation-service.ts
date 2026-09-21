@@ -6,6 +6,9 @@ import type {
 	ConversationSummary,
 	CreateConversationOptions,
 	DesktopAgentEvent,
+	InstalledSkill,
+	SkillDiagnostic,
+	SkillListResult,
 } from "../shared/ipc.ts";
 import { type AgentImage, AgentProcess, type AgentProcessEvent } from "./agent-process.ts";
 import { ConversationStore, type SessionEntryRecord } from "./conversation-store.ts";
@@ -49,6 +52,49 @@ function normalizeEntries(entries: Array<Record<string, unknown>>): SessionEntry
 	);
 }
 
+function readSkills(value: unknown): SkillListResult {
+	if (!isRecord(value) || !Array.isArray(value.skills) || !Array.isArray(value.diagnostics)) {
+		throw new Error("Agent returned invalid skills");
+	}
+	const skills = value.skills.map((skill): InstalledSkill => {
+		if (
+			!isRecord(skill) ||
+			typeof skill.name !== "string" ||
+			typeof skill.description !== "string" ||
+			typeof skill.filePath !== "string" ||
+			typeof skill.source !== "string" ||
+			typeof skill.disableModelInvocation !== "boolean" ||
+			(skill.scope !== "user" && skill.scope !== "project" && skill.scope !== "temporary")
+		) {
+			throw new Error("Agent returned an invalid skill");
+		}
+		return {
+			description: skill.description,
+			disableModelInvocation: skill.disableModelInvocation,
+			name: skill.name,
+			path: skill.filePath,
+			scope: skill.scope === "user" ? "personal" : skill.scope,
+			source: skill.source,
+		};
+	});
+	const diagnostics = value.diagnostics.map((diagnostic): SkillDiagnostic => {
+		if (
+			!isRecord(diagnostic) ||
+			typeof diagnostic.message !== "string" ||
+			(diagnostic.path !== undefined && typeof diagnostic.path !== "string") ||
+			(diagnostic.type !== "warning" && diagnostic.type !== "error" && diagnostic.type !== "collision")
+		) {
+			throw new Error("Agent returned an invalid skill diagnostic");
+		}
+		return {
+			message: diagnostic.message,
+			path: diagnostic.path,
+			type: diagnostic.type,
+		};
+	});
+	return { diagnostics, skills };
+}
+
 export class ConversationService {
 	private readonly agent: AgentProcess;
 	private readonly options: ConversationServiceOptions;
@@ -87,6 +133,16 @@ export class ConversationService {
 
 	listConversations(): ConversationSummary[] {
 		return this.store.listConversations();
+	}
+
+	async listSkills(): Promise<SkillListResult> {
+		return readSkills(await this.agent.getSkills());
+	}
+
+	async refreshSkills(): Promise<SkillListResult> {
+		this.assertIdle();
+		await this.agent.reloadResources();
+		return this.listSkills();
 	}
 
 	async createConversation(options: CreateConversationOptions): Promise<ConversationDetail> {

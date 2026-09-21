@@ -1,12 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type {
-	InstalledSkill,
-	InstalledSkillScope,
-	McpConfigProblem,
-	McpProbeResult,
-	McpServerConfig,
-	McpServers,
-} from "../../shared/ipc.ts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { McpConfigProblem, McpProbeResult, McpServerConfig, McpServers } from "../../shared/ipc.ts";
 import { inferServerName, parseMcpServers, splitCommandLine } from "../../shared/mcp.ts";
 import {
 	catalogById,
@@ -19,18 +12,19 @@ import {
 	pluginCatalog,
 	riskLabels,
 } from "./plugin-catalog.ts";
+import { SkillsPanel } from "./SkillsPanel.tsx";
 
 type ProbeState = McpProbeResult | "connecting";
 
 interface PendingInstall {
+	builtinId?: string;
 	busyKey: string;
 	configuration?: Record<string, string>;
 	displayName: string;
-	names: string[];
 	permissions: PluginPermission[];
 	reviewed: boolean;
 	risk: PluginRisk;
-	servers: McpServers;
+	servers?: McpServers;
 }
 
 function uniqueName(base: string, taken: McpServers): string {
@@ -100,121 +94,6 @@ function InstalledIcon() {
 	);
 }
 
-function SkillGlyph() {
-	return (
-		<span className="skill-glyph">
-			<svg aria-hidden="true" viewBox="0 0 40 40">
-				<path d="m20 3 14 8-14 8L6 11 20 3Z" />
-				<path d="m6 11 14 8v17L6 28V11Z" />
-				<path d="m34 11-14 8v17l14-8V11Z" />
-			</svg>
-		</span>
-	);
-}
-
-type SkillFilter = "all" | InstalledSkillScope;
-
-function SkillsPanel() {
-	const [skills, setSkills] = useState<InstalledSkill[]>([]);
-	const [loaded, setLoaded] = useState(false);
-	const [error, setError] = useState<string>();
-	const [query, setQuery] = useState("");
-	const [filter, setFilter] = useState<SkillFilter>("all");
-
-	useEffect(() => {
-		void window.piDesktop
-			.listSkills()
-			.then(setSkills)
-			.catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))
-			.finally(() => setLoaded(true));
-	}, []);
-
-	const visibleSkills = useMemo(() => {
-		const normalizedQuery = query.trim().toLowerCase();
-		return skills.filter((skill) => {
-			if (filter !== "all" && skill.scope !== filter) return false;
-			if (!normalizedQuery) return true;
-			return [skill.name, skill.description].some((value) => value.toLowerCase().includes(normalizedQuery));
-		});
-	}, [filter, query, skills]);
-
-	return (
-		<div className="mcp-panel-body">
-			<div className="mcp-page-content">
-				<header className="mcp-panel-header">
-					<div>
-						<h1 id="skill-page-title">技能</h1>
-						<p>通过任务专用技能扩展 Agent 的能力</p>
-					</div>
-				</header>
-
-				<label className="mcp-search">
-					<SearchIcon />
-					<input
-						aria-label="搜索技能"
-						placeholder="搜索技能"
-						value={query}
-						onChange={(event) => setQuery(event.target.value)}
-					/>
-				</label>
-
-				<section className="mcp-section">
-					<div className="mcp-section-heading skill-section-heading">
-						<h3>已安装</h3>
-						<span>{skills.length}</span>
-					</div>
-					<fieldset aria-label="技能范围" className="skill-filters">
-						{(
-							[
-								["all", "全部"],
-								["personal", "个人"],
-								["project", "项目"],
-							] as const
-						).map(([value, label]) => (
-							<button
-								aria-pressed={filter === value}
-								className={filter === value ? "active" : ""}
-								key={value}
-								type="button"
-								onClick={() => setFilter(value)}
-							>
-								{label}
-							</button>
-						))}
-					</fieldset>
-
-					{!loaded ? (
-						<div className="mcp-loading">正在加载技能…</div>
-					) : error ? (
-						<div className="mcp-empty">技能加载失败：{error}</div>
-					) : visibleSkills.length === 0 ? (
-						<div className="mcp-empty">
-							{skills.length === 0
-								? "还没有安装技能。点击右上角“添加”，将技能文件放入个人技能目录。"
-								: "没有找到符合条件的技能"}
-						</div>
-					) : (
-						<div className="skill-grid">
-							{visibleSkills.map((skill) => (
-								<article className="skill-card" key={skill.path} title={skill.path}>
-									<SkillGlyph />
-									<div>
-										<div className="skill-card-title">
-											<strong>{skill.name}</strong>
-											<span>{skill.scope === "personal" ? "个人" : "项目"}</span>
-										</div>
-										<p>{skill.description}</p>
-									</div>
-								</article>
-							))}
-						</div>
-					)}
-				</section>
-			</div>
-		</div>
-	);
-}
-
 export function McpPanel() {
 	const [activeTab, setActiveTab] = useState<"plugins" | "skills">("plugins");
 	const [servers, setServers] = useState<McpServers>({});
@@ -230,36 +109,35 @@ export function McpPanel() {
 	const [statuses, setStatuses] = useState<Record<string, ProbeState>>({});
 	const [detailName, setDetailName] = useState<string>();
 	const [pending, setPending] = useState<PendingInstall>();
+	const activeProbes = useRef(new Set<string>());
 
-	const probe = useCallback(async (names: string[]) => {
-		if (names.length === 0) return;
+	const probe = useCallback(async (name: string) => {
+		activeProbes.current.add(name);
 		setStatuses((current) => {
-			const next = { ...current };
-			for (const name of names) next[name] = "connecting";
-			return next;
+			return { ...current, [name]: "connecting" };
 		});
 		try {
-			const results = await window.piDesktop.probeMcpServers(names);
-			setStatuses((current) => ({ ...current, ...results }));
+			const result = await window.piDesktop.probeMcpServer(name);
+			setStatuses((current) => ({ ...current, [name]: result }));
 		} catch (reason) {
 			const message = reason instanceof Error ? reason.message : String(reason);
-			setStatuses((current) => {
-				const next = { ...current };
-				for (const name of names) next[name] = { status: "error", message };
-				return next;
-			});
+			setStatuses((current) => ({ ...current, [name]: { status: "error", message } }));
+		} finally {
+			activeProbes.current.delete(name);
 		}
 	}, []);
 
-	const applyList = useCallback(
-		(result: { problem?: McpConfigProblem; servers: McpServers }) => {
-			setServers(result.servers);
-			setProblem(result.problem);
-			setStatuses({});
-			if (!result.problem) void probe(Object.keys(result.servers));
-		},
-		[probe],
-	);
+	useEffect(() => {
+		return () => {
+			for (const name of activeProbes.current) void window.piDesktop.cancelMcpProbe(name);
+		};
+	}, []);
+
+	const applyList = useCallback((result: { problem?: McpConfigProblem; servers: McpServers }) => {
+		setServers(result.servers);
+		setProblem(result.problem);
+		setStatuses({});
+	}, []);
 
 	useEffect(() => {
 		void window.piDesktop
@@ -279,41 +157,27 @@ export function McpPanel() {
 		);
 	}, [query]);
 
-	const saveServers = async (next: McpServers, pendingKey: string, successMessage: string): Promise<boolean> => {
-		setBusyName(pendingKey);
+	const installStaged = async (install: PendingInstall) => {
+		setBusyName(install.busyKey);
 		setError(undefined);
 		setNotice(undefined);
 		try {
-			await window.piDesktop.saveMcpServers(next);
-			setServers(next);
+			const result = install.builtinId
+				? await window.piDesktop.installBuiltinPlugin(install.builtinId, install.configuration)
+				: await window.piDesktop.addCustomMcpServers(install.servers ?? {});
+			applyList(result);
 			setPending(undefined);
-			setNotice(successMessage);
-			return true;
+			setNotice(`已安装 ${install.builtinId ? install.displayName : result.names.join("、")}`);
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : String(reason));
-			return false;
 		} finally {
 			setBusyName(undefined);
 		}
 	};
 
-	/** Name conflicts are resolved here, so the confirmation card shows the final names. */
-	const installStaged = async (install: PendingInstall) => {
-		const next = { ...servers };
-		for (const [name, config] of Object.entries(install.servers)) {
-			next[uniqueName(name, next)] = config;
-		}
-		if (await saveServers(next, install.busyKey, `已安装 ${install.displayName}`)) {
-			void probe(install.names);
-		}
-	};
-
 	const requestInstall = (install: PendingInstall) => {
 		setError(undefined);
-		// Low-risk built-ins install in one click; anything else shows its
-		// permissions first.
-		if (install.risk === "low") void installStaged(install);
-		else setPending(install);
+		setPending(install);
 	};
 
 	const installPreset = (preset: PluginCatalogEntry) => {
@@ -326,20 +190,13 @@ export function McpPanel() {
 		}
 		const configuration = preset.input && value ? { directory: value } : undefined;
 		requestInstall({
+			builtinId: preset.id,
 			busyKey: preset.id,
 			configuration,
 			displayName: preset.displayName,
-			names: [preset.id],
 			permissions: preset.permissions,
 			reviewed: true,
 			risk: preset.risk,
-			servers: {
-				[preset.id]: {
-					type: "stdio",
-					command: preset.command,
-					args: preset.input && value ? [...preset.args, value] : preset.args,
-				},
-			},
 		});
 	};
 
@@ -366,7 +223,6 @@ export function McpPanel() {
 		setPending({
 			busyKey: "custom",
 			displayName: names.join("、"),
-			names,
 			permissions,
 			reviewed: false,
 			risk: "high",
@@ -386,14 +242,21 @@ export function McpPanel() {
 	};
 
 	const removeServer = async (serverName: string) => {
-		const next = { ...servers };
-		delete next[serverName];
-		if (await saveServers(next, serverName, `已移除 ${catalogById.get(serverName)?.displayName ?? serverName}`)) {
+		setBusyName(serverName);
+		setError(undefined);
+		setNotice(undefined);
+		try {
+			applyList(await window.piDesktop.removeMcpServer(serverName));
+			setNotice(`已移除 ${catalogById.get(serverName)?.displayName ?? serverName}`);
 			setStatuses((current) => {
 				const remaining = { ...current };
 				delete remaining[serverName];
 				return remaining;
 			});
+		} catch (reason) {
+			setError(reason instanceof Error ? reason.message : String(reason));
+		} finally {
+			setBusyName(undefined);
 		}
 	};
 
@@ -414,7 +277,7 @@ export function McpPanel() {
 
 	const renderStatus = (serverName: string) => {
 		const status = statusOf(serverName);
-		if (!status) return null;
+		if (!status) return <span className="mcp-status">已安装 · 未检测</span>;
 		if (status === "connecting") {
 			return <span className="mcp-status connecting">检测中…</span>;
 		}
@@ -613,11 +476,20 @@ export function McpPanel() {
 																	<button
 																		disabled={Boolean(busyName)}
 																		type="button"
-																		onClick={() => void probe([serverName])}
+																		onClick={() => void probe(serverName)}
 																	>
 																		重试
 																	</button>
 																</>
+															)}
+															{status !== "connecting" && !failed && (
+																<button
+																	disabled={Boolean(busyName)}
+																	type="button"
+																	onClick={() => void probe(serverName)}
+																>
+																	{status ? "重新测试" : "测试连接"}
+																</button>
 															)}
 															<button
 																aria-label={`移除 ${preset?.displayName ?? serverName}`}
@@ -668,6 +540,9 @@ export function McpPanel() {
 															<p>{preset.summary}</p>
 															<p className="mcp-permissions">
 																{preset.permissions.map(permissionChip).join(" · ")}
+															</p>
+															<p className="mcp-package-version">
+																{preset.packageName}@{preset.packageVersion}
 															</p>
 															{preset.input && !installed && (
 																<button

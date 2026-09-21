@@ -4,7 +4,7 @@
 // is paged: the first call returns one tool plus a `nextCursor`, the call with
 // that cursor returns the second tool.
 
-import { writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 
 if (process.env.MCP_ECHO_PID_FILE) {
 	writeFileSync(process.env.MCP_ECHO_PID_FILE, String(process.pid));
@@ -27,6 +27,19 @@ function send(message) {
 	process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
+function sendInitialize(message) {
+	const eventFile = process.env.MCP_ECHO_EVENT_FILE;
+	const label = process.env.MCP_ECHO_LABEL ?? "echo";
+	if (eventFile) appendFileSync(eventFile, `${label}:start\n`);
+	const complete = () => {
+		if (eventFile) appendFileSync(eventFile, `${label}:finish\n`);
+		send(message);
+	};
+	const delay = Number(process.env.MCP_ECHO_DELAY_MS ?? 0);
+	if (delay > 0) setTimeout(complete, delay);
+	else complete();
+}
+
 function handle(message) {
 	const { id, method, params } = message;
 	// Notifications carry no id and get no reply.
@@ -34,7 +47,7 @@ function handle(message) {
 
 	switch (method) {
 		case "initialize":
-			send({
+			sendInitialize({
 				jsonrpc: "2.0",
 				id,
 				result: {
@@ -91,5 +104,9 @@ process.stdin.on("data", (chunk) => {
 	}
 });
 // Exit when the client closes our stdin.
-process.stdin.on("end", () => process.exit(0));
-process.stdin.on("close", () => process.exit(0));
+if (process.env.MCP_ECHO_IGNORE_SHUTDOWN === "1") {
+	process.on("SIGTERM", () => {});
+} else {
+	process.stdin.on("end", () => process.exit(0));
+	process.stdin.on("close", () => process.exit(0));
+}
